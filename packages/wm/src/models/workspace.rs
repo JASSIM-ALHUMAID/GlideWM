@@ -7,7 +7,8 @@ use std::{
 use anyhow::Context;
 use uuid::Uuid;
 use wm_common::{
-  ContainerDto, GapsConfig, TilingDirection, WorkspaceConfig, WorkspaceDto,
+  ContainerDto, GapsConfig, ScrollAlign, TilingDirection, WorkspaceConfig,
+  WorkspaceDto, WorkspaceLayout,
 };
 use wm_platform::{Rect, RectDelta};
 
@@ -17,7 +18,10 @@ use crate::{
   models::{
     Container, DirectionContainer, TilingContainer, WindowContainer,
   },
-  traits::{CommonGetters, PositionGetters, TilingDirectionGetters},
+  traits::{
+    CommonGetters, PositionGetters, TilingDirectionGetters,
+    TilingSizeGetters,
+  },
 };
 
 #[derive(Clone)]
@@ -32,6 +36,7 @@ struct WorkspaceInner {
   config: WorkspaceConfig,
   gaps_config: GapsConfig,
   tiling_direction: TilingDirection,
+  scroll_offset: i32,
 }
 
 impl Workspace {
@@ -48,6 +53,7 @@ impl Workspace {
       config,
       gaps_config,
       tiling_direction,
+      scroll_offset: 0,
     };
 
     Self(Rc::new(RefCell::new(workspace)))
@@ -73,6 +79,174 @@ impl Workspace {
 
   pub fn set_gaps_config(&self, gaps_config: GapsConfig) {
     self.0.borrow_mut().gaps_config = gaps_config;
+  }
+
+  /// Whether the workspace uses the scrolling layout.
+  pub fn is_scrolling(&self) -> bool {
+    self.0.borrow().config.layout == WorkspaceLayout::Scrolling
+  }
+
+  /// Axis that the strip of windows scrolls along.
+  ///
+  /// The axis is stored as the workspace's tiling direction so that it can
+  /// be toggled at runtime (e.g. by the `toggle-tiling-direction`
+  /// command).
+  pub fn scroll_axis(&self) -> TilingDirection {
+    self.tiling_direction()
+  }
+
+  /// Current scroll offset in physical pixels along the scroll axis.
+  ///
+  /// A value of `0` corresponds to the start of the strip being aligned
+  /// with the start of the viewport.
+  pub fn scroll_offset(&self) -> i32 {
+    self.0.borrow().scroll_offset
+  }
+
+  /// Sets the scroll offset. Returns whether the offset changed.
+  pub fn set_scroll_offset(&self, offset: i32) -> bool {
+    let mut inner = self.0.borrow_mut();
+
+    if inner.scroll_offset == offset {
+      return false;
+    }
+
+    inner.scroll_offset = offset;
+    true
+  }
+
+  /// Extent (width or height) of the viewport along the scroll axis.
+  ///
+  /// The viewport is the workspace rect, i.e. the monitor's working area
+  /// with outer gaps applied.
+  pub fn viewport_extent(&self) -> anyhow::Result<i32> {
+    let rect = self.to_rect()?;
+
+    Ok(match self.scroll_axis() {
+      TilingDirection::Horizontal => rect.width(),
+      TilingDirection::Vertical => rect.height(),
+    })
+  }
+
+  /// Total extent of the strip of tiling children in pixels along the
+  /// scroll axis.
+  ///
+  /// This includes the inner gap between each pair of adjacent strip
+  /// items. Returns 0 if the workspace has no tiling children.
+  pub fn strip_extent(&self) -> anyhow::Result<i32> {
+    let viewport_extent = self.viewport_extent()?;
+    let children = self.tiling_children().collect::<Vec<_>>();
+
+    let Some(first_child) = children.first() else {
+      return Ok(0);
+    };
+
+    let (horizontal_gap, vertical_gap) = first_child.inner_gaps()?;
+    let inner_gap = match self.scroll_axis() {
+      TilingDirection::Vertical => vertical_gap,
+      TilingDirection::Horizontal => horizontal_gap,
+    };
+
+    let mut extent = 0;
+
+    for (index, child) in children.iter().enumerate() {
+      if index > 0 {
+        extent += inner_gap;
+      }
+
+      extent += child.scrolling_extent(viewport_extent);
+    }
+
+    Ok(extent)
+  }
+
+  /// Maximum scroll offset for the current strip contents.
+  ///
+  /// Returns 0 when the strip is narrower than the viewport.
+  pub fn max_scroll_offset(&self) -> anyhow::Result<i32> {
+    Ok((self.strip_extent()? - self.viewport_extent()?).max(0))
+  }
+
+  /// Clamps the scroll offset into bounds that are valid for the current
+  /// strip contents. Returns whether the offset changed.
+  pub fn clamp_scroll_offset(&self) -> anyhow::Result<bool> {
+    let clamped = self.scroll_offset().clamp(0, self.max_scroll_offset()?);
+
+    Ok(self.set_scroll_offset(clamped))
+  }
+
+  /// Scrolls the viewport so that the given descendant is fully visible
+  /// when the scrolling layout is active.
+  ///
+  /// The descendant is resolved to the top-level strip item that contains
+  /// it. Returns whether the offset changed. Has no effect for windows
+  /// that are not tiling children of this workspace.
+  pub fn ensure_descendant_visible(
+    &self,
+    container: &Container,
+  ) -> anyhow::Result<bool> {
+    if !self.is_scrolling() {
+      return Ok(false);
+    }
+
+    // Get the top-level strip item containing the descendant.
+    let strip_item = container
+      .self_and_ancestors()
+      .take_while(|ancestor| ancestor.id() != self.id())
+      .last();
+
+    let Some(strip_item) = strip_item else {
+      return Ok(false);
+    };
+
+    let Ok(strip_item) = strip_item.as_tiling_container() else {
+      return Ok(false);
+    };
+
+    let viewport_rect = self.to_rect()?;
+    let item_rect = strip_item.to_rect()?;
+
+    let (viewport_start, viewport_extent, item_start, item_extent) =
+      match self.scroll_axis() {
+        TilingDirection::Horizontal => (
+          viewport_rect.x(),
+          viewport_rect.width(),
+          item_rect.x(),
+          item_rect.width(),
+        ),
+        TilingDirection::Vertical => (
+          viewport_rect.y(),
+          viewport_rect.height(),
+          item_rect.y(),
+          item_rect.height(),
+        ),
+      };
+
+    let delta = match self.config().scroll.align {
+      ScrollAlign::Minimal => {
+        let item_end = item_start + item_extent;
+        let viewport_end = viewport_start + viewport_extent;
+
+        if item_start < viewport_start {
+          item_start - viewport_start
+        } else if item_end > viewport_end {
+          item_end - viewport_end
+        } else {
+          0
+        }
+      }
+      ScrollAlign::Center => {
+        let item_center = item_start + item_extent / 2;
+        let viewport_center = viewport_start + viewport_extent / 2;
+
+        item_center - viewport_center
+      }
+    };
+
+    let new_offset =
+      (self.scroll_offset() + delta).clamp(0, self.max_scroll_offset()?);
+
+    Ok(self.set_scroll_offset(new_offset))
   }
 
   /// Effective outer gaps for this workspace.

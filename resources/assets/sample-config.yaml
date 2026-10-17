@@ -122,6 +122,28 @@ window_behavior:
 
 workspaces:
   - name: '1'
+    # Layout used by the workspace.
+    # - 'tiling': Windows share the viewport (default).
+    # - 'scrolling': Windows form a strip along the scroll axis, and the
+    #   viewport scrolls to keep the focused window in view (inspired by
+    #   niri/PaperWM).
+    layout: 'tiling'
+    # Options for the scrolling layout (only used when layout is
+    # 'scrolling').
+    #scroll:
+    #  # Axis that the strip of windows scrolls along.
+    #  axis: 'horizontal'
+    #  # Default size of new windows as a fraction of the viewport
+    #  # (measured along the scroll axis).
+    #  window_width: 0.5
+    #  # How the focused window is scrolled into view:
+    #  # - 'minimal': Scroll the least amount required (niri-like).
+    #  # - 'center': Center the focused window in the viewport.
+    #  align: 'minimal'
+    #  # Where new windows are inserted in the strip:
+    #  # - 'after_focused': Insert directly after the focused window.
+    #  # - 'end': Append to the end of the strip.
+    #  insert_position: 'after_focused'
   - name: '2'
   - name: '3'
   - name: '4'

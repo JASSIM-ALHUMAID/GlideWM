@@ -8,7 +8,10 @@ use wm_platform::NativeWindowWindowsExt;
 
 use crate::{
   commands::{window::run_window_rules, workspace::sort_workspaces},
-  traits::{CommonGetters, TilingSizeGetters, WindowGetters},
+  traits::{
+    CommonGetters, TilingDirectionGetters, TilingSizeGetters,
+    WindowGetters,
+  },
   user_config::UserConfig,
   wm::WindowManager,
   wm_state::WmState,
@@ -124,7 +127,16 @@ fn update_workspace_configs(
       }
       Some(workspace_config) => {
         if *workspace_config != workspace.config() {
+          let prev_layout = workspace.config().layout;
+
           workspace.set_config(workspace_config.clone());
+
+          // Reset scroll state when the layout config changed.
+          if prev_layout != workspace_config.layout {
+            workspace
+              .set_tiling_direction(workspace_config.scroll.axis.clone());
+            workspace.set_scroll_offset(0);
+          }
 
           sort_workspaces(&monitor, config)?;
 

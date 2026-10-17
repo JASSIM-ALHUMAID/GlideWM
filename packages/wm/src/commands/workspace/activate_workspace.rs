@@ -1,6 +1,8 @@
 use anyhow::Context;
 use tracing::info;
-use wm_common::{TilingDirection, WmEvent, WorkspaceConfig};
+use wm_common::{
+  TilingDirection, WmEvent, WorkspaceConfig, WorkspaceLayout,
+};
 
 use super::sort_workspaces;
 use crate::{
@@ -51,10 +53,17 @@ pub fn activate_workspace(
 
   let monitor_rect = target_monitor.to_rect()?;
 
-  let tiling_direction = if monitor_rect.height() > monitor_rect.width() {
-    TilingDirection::Vertical
-  } else {
-    TilingDirection::Horizontal
+  let tiling_direction = match workspace_config.layout {
+    // Scrolling workspaces initialize their scroll axis from config.
+    WorkspaceLayout::Scrolling => workspace_config.scroll.axis.clone(),
+    // Default the tiling direction based on the monitor's orientation.
+    WorkspaceLayout::Tiling => {
+      if monitor_rect.height() > monitor_rect.width() {
+        TilingDirection::Vertical
+      } else {
+        TilingDirection::Horizontal
+      }
+    }
   };
 
   let workspace = Workspace::new(

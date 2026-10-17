@@ -19,6 +19,19 @@ pub trait TilingSizeGetters: CommonGetters {
 
   fn set_gaps_config(&self, gaps_config: GapsConfig);
 
+  /// Size of this container in pixels along the scroll axis when it is a
+  /// child of a scrolling workspace.
+  ///
+  /// This interprets `tiling_size` as a fraction of the viewport extent
+  /// along the scroll axis, instead of as a share of the available space.
+  fn scrolling_extent(&self, viewport_extent: i32) -> i32 {
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+    let extent =
+      (self.tiling_size() * viewport_extent as f32).round() as i32;
+
+    extent.max(1)
+  }
+
   /// Gets the horizontal and vertical gaps between windows in pixels.
   fn inner_gaps(&self) -> anyhow::Result<(i32, i32)> {
     let monitor = self.monitor().context("No monitor.")?;

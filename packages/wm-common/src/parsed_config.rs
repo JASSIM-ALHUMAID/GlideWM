@@ -4,7 +4,7 @@ use wm_platform::{
   RectDelta,
 };
 
-use crate::app_command::InvokeCommand;
+use crate::{app_command::InvokeCommand, TilingDirection};
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
@@ -385,6 +385,82 @@ pub struct WorkspaceConfig {
 
   #[serde(default = "default_bool::<false>")]
   pub keep_alive: bool,
+
+  /// Layout that the workspace uses: `'tiling'` (default) or
+  /// `'scrolling'`.
+  #[serde(default)]
+  pub layout: WorkspaceLayout,
+
+  /// Options for the scrolling layout. Only read when `layout` is
+  /// `'scrolling'`.
+  #[serde(default)]
+  pub scroll: ScrollConfig,
+}
+
+/// Layout that a workspace uses to arrange its tiling children.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceLayout {
+  /// Children share the viewport (existing behavior).
+  #[default]
+  Tiling,
+
+  /// Children form a strip along the scroll axis. The viewport scrolls
+  /// to keep the focused child in view.
+  Scrolling,
+}
+
+/// Options for the scrolling layout.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct ScrollConfig {
+  /// Axis that the strip of windows scrolls along.
+  pub axis: TilingDirection,
+
+  /// Default size of new strip items as a fraction of the viewport
+  /// (measured along the scroll axis). Clamped to `0.05..=1.0`.
+  pub window_width: f32,
+
+  /// How the focused strip item is scrolled into view.
+  pub align: ScrollAlign,
+
+  /// Where new strip items are inserted.
+  pub insert_position: ScrollInsertPosition,
+}
+
+impl Default for ScrollConfig {
+  fn default() -> Self {
+    ScrollConfig {
+      axis: TilingDirection::Horizontal,
+      window_width: 0.5,
+      align: ScrollAlign::Minimal,
+      insert_position: ScrollInsertPosition::AfterFocused,
+    }
+  }
+}
+
+/// How the viewport scrolls to keep the focused strip item in view.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollAlign {
+  /// Scroll the least amount required to make the item fully visible.
+  #[default]
+  Minimal,
+
+  /// Center the focused item in the viewport.
+  Center,
+}
+
+/// Where new strip items are inserted in a scrolling workspace.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollInsertPosition {
+  /// Insert directly after the focused strip item.
+  #[default]
+  AfterFocused,
+
+  /// Append to the end of the strip.
+  End,
 }
 
 /// Helper function for setting a default value for a boolean field.
