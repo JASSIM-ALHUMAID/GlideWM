@@ -1,6 +1,6 @@
 # Scrolling layout (Niri-style) — design & implementation plan
 
-Status: **planned** · Branch: `feat/scrolling-layout` · Fork: `JASSIM-ALHUMAID/glazewm` (upstream: `glzr-io/glazewm`)
+Status: **in progress - P1 (config/model) and P2 (core geometry) implemented** · Branch: `feat/scrolling-layout` · Fork: `JASSIM-ALHUMAID/glazewm` (upstream: `glzr-io/glazewm`)
 
 This document organizes the work for adding a Niri/Hyprscroller-style **scrolling
 layout** to GlazeWM. It is the working plan for this branch: model, config
@@ -287,7 +287,7 @@ reviewable.
 | --- | --- |
 | `packages/wm/src/traits/position_getters.rs` | scrolling branch in `impl_position_getters_as_resizable!` (§2.4) |
 | `packages/wm/src/commands/workspace/update_scroll_position.rs` (new) | ensure-visible + clamp helpers |
-| `packages/wm/src/wm_state.rs` or `wm.rs` sync call | invoke helpers on focus-update / redraw passes |
+| `packages/wm/src/commands/general/platform_sync.rs` | invoke ensure-visible/clamp in the sync pipeline |
 | tests | rect math vs. offset, clamp, ensure-visible align modes |
 
 ### P3 — navigation & sync

@@ -12,6 +12,7 @@ use wm_platform::{CornerStyle, OpacityValue};
 use wm_platform::{Rect, WindowZOrder};
 
 use crate::{
+  commands::workspace::update_scroll_position,
   models::{Container, WindowContainer},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
@@ -28,6 +29,10 @@ pub fn platform_sync(
   if state.pending_sync.needs_focus_update() {
     sync_focus(&focused_container, state)?;
   }
+
+  // Update the scroll offset of the focused workspace (if it uses the
+  // scrolling layout) prior to redrawing containers.
+  update_scroll_position(&focused_container, state)?;
 
   if !state.pending_sync.containers_to_redraw().is_empty()
     || !state.pending_sync.workspaces_to_reorder().is_empty()
