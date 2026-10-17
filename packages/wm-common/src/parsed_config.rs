@@ -1,3 +1,6 @@
+use std::str::FromStr;
+
+use anyhow::bail;
 use serde::{Deserialize, Serialize};
 use wm_platform::{
   Color, CornerStyle, Key, Keybinding, LengthValue, OpacityValue,
@@ -408,6 +411,30 @@ pub enum WorkspaceLayout {
   /// Children form a strip along the scroll axis. The viewport scrolls
   /// to keep the focused child in view.
   Scrolling,
+}
+
+impl FromStr for WorkspaceLayout {
+  type Err = anyhow::Error;
+
+  /// Parses a string into a workspace layout.
+  ///
+  /// Example:
+  /// ```
+  /// # use wm_common::WorkspaceLayout;
+  /// # use std::str::FromStr;
+  /// let layout = WorkspaceLayout::from_str("tiling");
+  /// assert_eq!(layout.unwrap(), WorkspaceLayout::Tiling);
+  ///
+  /// let layout = WorkspaceLayout::from_str("scrolling");
+  /// assert_eq!(layout.unwrap(), WorkspaceLayout::Scrolling);
+  /// ```
+  fn from_str(unparsed: &str) -> anyhow::Result<Self> {
+    match unparsed {
+      "tiling" => Ok(Self::Tiling),
+      "scrolling" => Ok(Self::Scrolling),
+      _ => bail!("Not a valid workspace layout: {}", unparsed),
+    }
+  }
 }
 
 /// Options for the scrolling layout.

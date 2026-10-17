@@ -6,7 +6,7 @@ use tracing::Level;
 use uuid::Uuid;
 use wm_platform::{Delta, Direction, LengthValue, OpacityValue};
 
-use crate::TilingDirection;
+use crate::{TilingDirection, WorkspaceLayout};
 
 const VERSION: &str = env!("VERSION_NUMBER");
 
@@ -166,6 +166,13 @@ pub enum InvokeCommand {
   },
   Position(InvokePositionCommand),
   Resize(InvokeResizeCommand),
+  Scroll {
+    #[clap(long, required = true)]
+    direction: Direction,
+
+    #[clap(long, allow_hyphen_values = true)]
+    amount: Option<LengthValue>,
+  },
   UpdateWorkspaceConfig {
     #[clap(long, allow_hyphen_values = true)]
     workspace: Option<String>,
@@ -197,6 +204,13 @@ pub enum InvokeCommand {
 
     #[clap(long, default_missing_value = "true", require_equals = true, num_args = 0..=1)]
     maximized: Option<bool>,
+  },
+  SetLayout {
+    #[clap(long, allow_hyphen_values = true)]
+    workspace: Option<String>,
+
+    #[clap(long, required = true)]
+    layout: WorkspaceLayout,
   },
   SetMinimized,
   SetTiling,
@@ -431,4 +445,60 @@ pub struct InvokeUpdateWorkspaceConfig {
 
   #[clap(long)]
   pub keep_alive: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// Parses a command string the same way keybinding and IPC commands are
+  /// parsed (i.e. clap args split on whitespace, with a leading dummy
+  /// binary name).
+  fn parse_command(unparsed: &str) -> InvokeCommand {
+    InvokeCommand::try_parse_from(
+      iter::once("").chain(unparsed.split_whitespace()),
+    )
+    .unwrap()
+  }
+
+  #[test]
+  fn parses_set_layout_command() {
+    assert_eq!(
+      parse_command("set-layout --layout scrolling"),
+      InvokeCommand::SetLayout {
+        workspace: None,
+        layout: WorkspaceLayout::Scrolling,
+      }
+    );
+
+    assert_eq!(
+      parse_command("set-layout --layout tiling --workspace 2"),
+      InvokeCommand::SetLayout {
+        workspace: Some("2".to_string()),
+        layout: WorkspaceLayout::Tiling,
+      }
+    );
+  }
+
+  #[test]
+  fn parses_scroll_command() {
+    assert_eq!(
+      parse_command("scroll --direction left"),
+      InvokeCommand::Scroll {
+        direction: Direction::Left,
+        amount: None,
+      }
+    );
+
+    assert_eq!(
+      parse_command("scroll --direction right --amount 15%"),
+      InvokeCommand::Scroll {
+        direction: Direction::Right,
+        amount: Some(LengthValue {
+          amount: 0.15,
+          unit: wm_platform::LengthUnit::Percentage,
+        }),
+      }
+    );
+  }
 }

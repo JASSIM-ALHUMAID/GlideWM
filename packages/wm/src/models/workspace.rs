@@ -363,6 +363,8 @@ impl Workspace {
       x: rect.x(),
       y: rect.y(),
       tiling_direction: self.tiling_direction(),
+      layout: config.layout,
+      scroll_offset: self.scroll_offset(),
     }))
   }
 }

@@ -144,6 +144,10 @@ workspaces:
     #  # - 'after_focused': Insert directly after the focused window.
     #  # - 'end': Append to the end of the strip.
     #  insert_position: 'after_focused'
+    # The layout can be switched at runtime, and the strip scrolled along
+    # its axis without moving focus:
+    #   `set-layout --layout scrolling --workspace 1`
+    #   `scroll --direction left --amount 10%`
   - name: '2'
   - name: '3'
   - name: '4'

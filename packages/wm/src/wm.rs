@@ -31,8 +31,8 @@ use crate::{
       update_window_state, WindowPositionTarget,
     },
     workspace::{
-      focus_workspace, move_workspace_in_direction,
-      update_workspace_config,
+      focus_workspace, move_workspace_in_direction, scroll_workspace,
+      set_workspace_layout, update_workspace_config,
     },
   },
   events::{
@@ -484,6 +484,12 @@ impl WindowManager {
           _ => Ok(()),
         }
       }
+      InvokeCommand::Scroll { direction, amount } => {
+        let workspace =
+          subject_container.workspace().context("No workspace.")?;
+
+        scroll_workspace(&workspace, direction, amount.as_ref(), state)
+      }
       InvokeCommand::SetFloating {
         centered,
         shown_on_top,
@@ -563,6 +569,17 @@ impl WindowManager {
         }
         _ => Ok(()),
       },
+      InvokeCommand::SetLayout { workspace, layout } => {
+        let workspace = if let Some(workspace_name) = workspace {
+          state
+            .workspace_by_name(workspace_name)
+            .context("Workspace doesn't exist.")?
+        } else {
+          subject_container.workspace().context("No workspace.")?
+        };
+
+        set_workspace_layout(&workspace, layout, state)
+      }
       InvokeCommand::SetMinimized => {
         match subject_container.as_window_container() {
           Ok(window) => {

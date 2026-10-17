@@ -1,6 +1,6 @@
 # Scrolling layout (Niri-style) — design & implementation plan
 
-Status: **in progress - P1–P4 implemented (config/model, core geometry, navigation & off-viewport sync, mutation semantics)** · Branch: `feat/scrolling-layout` · Fork: `JASSIM-ALHUMAID/glazewm` (upstream: `glzr-io/glazewm`)
+Status: **in progress - P1–P5 implemented (config/model, core geometry, navigation & off-viewport sync, mutation semantics, commands & IPC)** · Branch: `feat/scrolling-layout` · Fork: `JASSIM-ALHUMAID/glazewm` (upstream: `glzr-io/glazewm`)
 
 This document organizes the work for adding a Niri/Hyprscroller-style **scrolling
 layout** to GlazeWM. It is the working plan for this branch: model, config
@@ -252,17 +252,30 @@ workspace), or appends to the end of the strip when it has none.
 
 ### 4.6 Layout switching & commands
 
-- `set-layout --layout scrolling|tiling [--workspace <name>]` — runtime switch,
-  emits `WmEvent`; on switch to scrolling: normalize sizes (clamp fraction)
-  and reset `scroll_offset` to ensure focused window visible.
-- `scroll --direction left|right [--amount 10%]` — offset-only scroll (phase 5
-  nicety; not required for MVP).
+- `set-layout --layout scrolling|tiling [--workspace <name>]` —
+  `set_workspace_layout` (new command). Targets the given workspace or the
+  subject container's workspace. Switching to scrolling clamps the tiling
+  sizes to `[MIN_TILING_SIZE, 1.0]` (they become viewport fractions), resets
+  `scroll_offset` and scrolls the focused descendant into view; switching to
+  tiling keeps the sizes (reinterpreted as shares of the workspace).
+  Emits `WorkspaceUpdated` — the layout is part of the workspace config, so
+  the existing event already carries it (no new `WmEvent` variant needed).
+- `scroll --direction <left|right|up|down> [--amount <length>]` —
+  `scroll_workspace` (new command). Offsets the subject workspace's
+  `scroll_offset` without moving focus; default amount is 10% of the
+  viewport extent, `%` amounts are relative to the viewport and px amounts
+  are physical pixels. No-op for non-scrolling workspaces and for directions
+  perpendicular to the scroll axis. The offset is clamped to the valid
+  range; the next focus change re-ensures the focused strip item is visible,
+  which may undo scrolling away from it.
 - `toggle-tiling-direction` on a window whose direction container is a
   scrolling workspace flips the workspace's scroll axis in place — the
   window is never wrapped in a new split container to hold the inverted
   direction.
-- Registration: `wm-common/src/app_command.rs` (`InvokeCommand`), dispatch in
-  `packages/wm/src/wm.rs`, following `SetTilingDirection` exactly.
+- IPC: `WorkspaceLayout` implements `FromStr` so `--layout` parses in clap;
+  `InvokeCommand::SetLayout` and `InvokeCommand::Scroll` are dispatched in
+  `packages/wm/src/wm.rs` following `SetTilingDirection`. `WorkspaceDto`
+  exposes `layout` and `scrollOffset` for UI/scrollbar consumers.
 
 ### 4.7 Redraw triggers
 
@@ -378,10 +391,15 @@ reviewable.
 
 | File | Change |
 | --- | --- |
-| `packages/wm-common/src/app_command.rs` | `SetLayout`, `Scroll` commands |
-| `packages/wm/src/wm.rs` | dispatch |
+| `packages/wm-common/src/app_command.rs` | `SetLayout`, `Scroll` variants; parsing tests for both |
+| `packages/wm-common/src/parsed_config.rs` | `FromStr` for `WorkspaceLayout` (clap parsing of `--layout`) |
 | `packages/wm-common/src/dtos/workspace_dto.rs` | expose `layout`, `scroll_offset` (Zebar/UI can render a scrollbar) |
-| `packages/wm-common/src/wm_event.rs` | `WmEvent` for layout change (if needed for UI) |
+| `packages/wm/src/commands/workspace/set_workspace_layout.rs` (new) | runtime layout switch (clamp sizes, reset/ensure offset, `WorkspaceUpdated`) |
+| `packages/wm/src/commands/workspace/scroll_workspace.rs` (new) | offset-only scroll command (axis check, clamp, redraw) |
+| `packages/wm/src/models/workspace.rs` | DTO fields in `to_dto` |
+| `packages/wm/src/wm.rs` | dispatch for `SetLayout`/`Scroll` |
+| `resources/assets/sample-config.yaml` | runtime command examples in the scrolling block |
+| tests | layout switch (clamp / offset reset + ensure visible / keep sizes / no-op), scroll command (amounts, clamping, no-ops) |
 
 ### P6 — deferred (not in v1)
 
