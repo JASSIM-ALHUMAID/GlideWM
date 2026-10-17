@@ -69,8 +69,10 @@ general:
       duration_ms: 250
 
       # Easing curve as cubic-bezier control points [x1, y1, x2, y2].
-      # Values of y outside 0-1 cause overshoot.
-      curve: [0.05, 0.9, 0.1, 1.05]
+      # Ease-out: the workspace glides into place. Values of y outside
+      # 0-1 are clamped, since window slides are translations (an
+      # overshoot would read as a bounce).
+      curve: [0.22, 1.0, 0.36, 1.0]
 
     # Animation to play when a window is first shown (e.g. an application
     # that's launched). If the window is repositioned while the animation
@@ -87,7 +89,9 @@ general:
       duration_ms: 200
 
       # Easing curve as cubic-bezier control points [x1, y1, x2, y2].
-      curve: [0.05, 0.9, 0.1, 1.05]
+      # Ease-out, like the workspace switch. Values of y outside 0-1 are
+      # clamped, since window slides are translations.
+      curve: [0.22, 1.0, 0.36, 1.0]
 
 gaps:
   # Whether to scale the gaps with the DPI of the monitor.
