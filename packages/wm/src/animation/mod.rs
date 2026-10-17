@@ -344,7 +344,7 @@ impl Animations {
     let animation_config = &config.value.general.animations.window_open;
 
     let will_slide_in = self.is_available(config)
-      && window.state() == WindowState::Tiling
+      && window.state() != WindowState::Minimized
       && animation_config.style != WindowOpenAnimationStyle::None
       && animation_config.duration_ms > 0;
 
@@ -664,10 +664,11 @@ impl Animations {
     window: &WindowContainer,
     placement: &WindowPlacement,
   ) -> bool {
-    // Only tiled windows are animated for now. Floating windows would
-    // need their saved placement restored after the animation, and
-    // fullscreen/minimized windows aren't positioned by the WM.
-    window.state() == WindowState::Tiling
+    // Minimized windows aren't positioned by the WM, tiling windows that
+    // are scrolled out of the viewport are already parked at the edge,
+    // and dragged or resized windows follow the cursor. Tiling, floating,
+    // and fullscreen windows are all animated.
+    window.state() != WindowState::Minimized
       && !placement.is_scrolled_out
       && window.active_drag().is_none()
   }
