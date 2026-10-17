@@ -68,7 +68,9 @@ general:
       curve: [0.05, 0.9, 0.1, 1.05]
 
     # Animation to play when a window is first shown (e.g. an application
-    # that's launched).
+    # that's launched). If the window is repositioned while the animation
+    # is still running (e.g. the tiling layout is still settling), the
+    # animation smoothly retargets to the new position instead of snapping.
     window_open:
       # - 'none': No animation.
       # - 'slide': Window slides in from the right edge of the monitor.
