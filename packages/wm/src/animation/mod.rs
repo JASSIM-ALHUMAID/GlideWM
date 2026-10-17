@@ -80,11 +80,18 @@ pub enum WindowAnimation {
   SlideOut,
 }
 
-/// Whether an animated window is sliding in or out.
+/// What an animated window is being animated for.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum AnimationKind {
+  /// Window slides in when its workspace becomes displayed.
   SlideIn,
+
+  /// Window slides out when its workspace stops being displayed.
   SlideOut,
+
+  /// Window slides in when it's first shown (e.g. an application
+  /// launching).
+  WindowOpen,
 }
 
 /// State of an animation that's in flight.
@@ -95,6 +102,9 @@ struct ActiveAnimation {
   sequence: u64,
 
   kind: AnimationKind,
+
+  /// Frame that the animation is tweening the window towards.
+  target: Rect,
 }
 
 /// Completion of a window animation, emitted by the animation worker.
@@ -442,7 +452,6 @@ impl Animations {
   pub fn plan_window_open(
     &mut self,
     window: &WindowContainer,
-    previous_display_state: &DisplayState,
     placement: &WindowPlacement,
     config: &UserConfig,
   ) -> Option<WindowAnimation> {
@@ -454,20 +463,14 @@ impl Animations {
       return None;
     }
 
-    let animation_config = &config.value.general.animations.window_open;
-
-    if !self.is_available(config)
-      || animation_config.style == WindowOpenAnimationStyle::None
-      || animation_config.duration_ms == 0
-      || !Self::is_animatable_window(window, placement)
-      || !matches!(
-        previous_display_state,
-        DisplayState::Hidden | DisplayState::Hiding
-      )
-      || !matches!(window.display_state(), DisplayState::Showing)
+    if let Some(reason) =
+      self.open_slide_skip_reason(window, placement, config)
     {
+      tracing::debug!("Not animating window open for {window}: {reason}");
       return None;
     }
+
+    let animation_config = &config.value.general.animations.window_open;
 
     let monitor = window.monitor()?;
 
@@ -477,10 +480,11 @@ impl Animations {
     let slide_distance =
       monitor.native_properties().bounds.width() + SLIDE_MARGIN_PX;
 
-    let start_rect = placement.rect.translate_in_direction(
-      &slide_edge.to_direction(),
-      slide_distance,
-    );
+    let start_rect = placement
+      .rect
+      .translate_in_direction(&slide_edge.to_direction(), slide_distance);
+
+    tracing::debug!("Animating window open for {window}");
 
     self.start_animation(
       window,
@@ -488,10 +492,52 @@ impl Animations {
       placement.rect.clone(),
       Duration::from_millis(u64::from(animation_config.duration_ms)),
       CubicBezier::from(&animation_config.curve),
-      AnimationKind::SlideIn,
+      AnimationKind::WindowOpen,
     );
 
     Some(WindowAnimation::SlideIn { start_rect })
+  }
+
+  /// Why a newly opened window shouldn't get an open slide, if any.
+  ///
+  /// The `pending_open` flag is consumed regardless of the outcome, so a
+  /// window that isn't animated on its first redraw pass is never
+  /// animated later.
+  fn open_slide_skip_reason(
+    &self,
+    window: &WindowContainer,
+    placement: &WindowPlacement,
+    config: &UserConfig,
+  ) -> Option<&'static str> {
+    let animation_config = &config.value.general.animations.window_open;
+
+    if !self.is_available(config) {
+      return Some("animations are unavailable");
+    }
+
+    if animation_config.style == WindowOpenAnimationStyle::None {
+      return Some("window open animations are disabled in config");
+    }
+
+    if animation_config.duration_ms == 0 {
+      return Some("window open animation duration is zero");
+    }
+
+    // New windows start in the `Shown` display state (the OS window
+    // already exists by the time it's managed), so the check is on
+    // whether the window will be visible after this pass.
+    if !matches!(
+      window.display_state(),
+      DisplayState::Showing | DisplayState::Shown
+    ) {
+      return Some("window won't be visible after this pass");
+    }
+
+    if !Self::is_animatable_window(window, placement) {
+      return Some("window can't be animated");
+    }
+
+    None
   }
 
   /// Whether the window is eligible for position animations.
@@ -541,15 +587,80 @@ impl Animations {
         sequence,
         handle: window.native().id().0,
         from: from_rect,
-        to: to_rect,
+        to: to_rect.clone(),
         duration,
         curve,
       }));
     }
 
-    self
-      .active
-      .insert(window_id, ActiveAnimation { sequence, kind });
+    self.active.insert(
+      window_id,
+      ActiveAnimation {
+        sequence,
+        kind,
+        target: to_rect,
+      },
+    );
+  }
+
+  /// Keeps the open animation of a window alive when the layout moves
+  /// the window while the slide is still in flight.
+  ///
+  /// A window that opens in a scrolling workspace can be laid out
+  /// differently within the same sync pass or the next one, because the
+  /// strip re-flows and scrolls when the window is inserted. Instead of
+  /// cancelling the slide and snapping the window to the new placement,
+  /// the slide is retargeted to it from the window's current frame.
+  ///
+  /// Returns whether the animation worker owns the window's position,
+  /// meaning that the redraw pass must not reposition the window.
+  pub fn retarget_open_animation(
+    &mut self,
+    window: &WindowContainer,
+    placement: &WindowPlacement,
+    config: &UserConfig,
+  ) -> bool {
+    let Some(active) = self.active.get(&window.id()) else {
+      return false;
+    };
+
+    if active.kind != AnimationKind::WindowOpen {
+      return false;
+    }
+
+    let target = active.target.clone();
+
+    // If the window can no longer be animated (e.g. it was hidden again
+    // or scrolled out of view mid-slide), let the regular redraw pass
+    // take over.
+    if !self.is_available(config)
+      || !Self::is_animatable_window(window, placement)
+    {
+      return false;
+    }
+
+    if target == placement.rect {
+      // The placement didn't change; the window is already sliding
+      // towards it.
+      return true;
+    }
+
+    let animation_config = &config.value.general.animations.window_open;
+
+    tracing::debug!("Retargeting window open animation: {window}");
+
+    // Start from the window's current frame so that the slide continues
+    // seamlessly.
+    self.start_animation(
+      window,
+      None,
+      placement.rect.clone(),
+      Duration::from_millis(u64::from(animation_config.duration_ms)),
+      CubicBezier::from(&animation_config.curve),
+      AnimationKind::WindowOpen,
+    );
+
+    true
   }
 
   /// Cancels the animation that's in flight for the window, if any.

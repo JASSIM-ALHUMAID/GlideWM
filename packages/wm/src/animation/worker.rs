@@ -165,6 +165,14 @@ fn apply_command(
         .or_else(|| get_frame(request.handle))
         .unwrap_or_else(|| request.to.clone());
 
+      tracing::debug!(
+        "Animating window (id={}): {:?} -> {:?} over {:?}",
+        request.window_id,
+        from,
+        request.to,
+        request.duration
+      );
+
       animations.push(ActiveAnimation {
         window_id: request.window_id,
         sequence: request.sequence,

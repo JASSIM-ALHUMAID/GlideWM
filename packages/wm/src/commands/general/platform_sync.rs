@@ -325,15 +325,30 @@ fn redraw_containers(
         config,
       )
       .or_else(|| {
-        state.animations.plan_window_open(
-          window,
-          &previous_display_state,
-          &placement,
-          config,
-        )
+        state
+          .animations
+          .plan_window_open(window, &placement, config)
       });
 
-    if animation.is_none() {
+    // A window whose open slide is still in flight stays owned by the
+    // animation worker when the layout moves it mid-slide (e.g. a
+    // scrolling workspace re-flows just after the window is inserted).
+    // The slide is retargeted to the new placement instead of the
+    // window snapping into place.
+    let is_animating = animation.is_some()
+      || state
+        .animations
+        .retarget_open_animation(window, &placement, config);
+
+    tracing::debug!(
+      "Window sync pass: {window} rect={:?} scrolled_out={} previous={:?} display={:?} animating={is_animating}",
+      placement.rect,
+      placement.is_scrolled_out,
+      previous_display_state,
+      window.display_state()
+    );
+
+    if !is_animating {
       state.animations.cancel(window);
     }
 
@@ -348,15 +363,17 @@ fn redraw_containers(
       // The animation is a no-op on platforms that don't support it.
       #[cfg(not(target_os = "windows"))]
       let _ = animation;
-    } else if let Err(err) = reposition_window(
-      window,
-      placement,
-      *hide_corner,
-      &z_order,
-      is_visible,
-      config,
-    ) {
-      tracing::warn!("Failed to set window position: {}", err);
+    } else if !is_animating {
+      if let Err(err) = reposition_window(
+        window,
+        placement,
+        *hide_corner,
+        &z_order,
+        is_visible,
+        config,
+      ) {
+        tracing::warn!("Failed to set window position: {}", err);
+      }
     }
 
     // Whether the window is either transitioning to or from fullscreen.
@@ -585,6 +602,11 @@ fn apply_window_animation(
   };
 
   if let WindowAnimation::SlideIn { start_rect } = animation {
+    tracing::debug!(
+      "Parking animated window at start frame: {window} frame={:?}",
+      start_rect
+    );
+
     let swp_flags = SWP_NOACTIVATE
       | SWP_NOCOPYBITS
       | SWP_NOSENDCHANGING
