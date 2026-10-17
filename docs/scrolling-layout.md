@@ -130,7 +130,7 @@ camelCase is only used for serialization/IPC):
 ```yaml
 workspaces:
   - name: '1'
-    layout: scrolling        # 'tiling' (default) | 'scrolling'
+    layout: scrolling        # 'tiling' (default) | 'scrolling' | 'bsp'
     scroll:                  # only read when layout == scrolling; optional
       axis: horizontal       # 'horizontal' (default) | 'vertical'
       window_width: 0.5      # default size of new windows (fraction of viewport)
@@ -144,9 +144,11 @@ Rust side (`packages/wm-common/src/parsed_config.rs`):
 pub struct WorkspaceConfig {
   // existing fields...
   #[serde(default)]
-  pub layout: WorkspaceLayout,        // enum { Tiling, Scrolling } (default Tiling)
+  pub layout: WorkspaceLayout,        // enum { Tiling, Scrolling, Bsp } (default Tiling)
   #[serde(default)]
   pub scroll: ScrollConfig,           // axis, window_width, align, insert_position
+  #[serde(default)]
+  pub bsp: BspConfig,                 // automatic_scheme
 }
 ```
 
@@ -271,7 +273,7 @@ workspace), or appends to the end of the strip when it has none.
 
 ### 4.6 Layout switching & commands
 
-- `set-layout --layout scrolling|tiling [--workspace <name>]` —
+- `set-layout --layout scrolling|tiling|bsp [--workspace <name>]` —
   `set_workspace_layout` (new command). Targets the given workspace or the
   subject container's workspace. Switching to scrolling clamps the tiling
   sizes to `[MIN_TILING_SIZE, 1.0]` (they become viewport fractions), resets
@@ -279,7 +281,10 @@ workspace), or appends to the end of the strip when it has none.
   tiling rescales the sizes proportionally into shares that fill the
   viewport (viewport fractions can sum to more than 1, e.g. two windows at
   `scroll.window_width: 0.7` sum to 1.4, which would leave the second window
-  past the right edge of the viewport).
+  past the right edge of the viewport). Switching to BSP instead rebuilds
+  the children as a balanced binary tree (see `docs/layouts.md`), and a
+  BSP → scrolling switch dissolves the BSP tree's root split first so its
+  children become strip items.
   Emits `WorkspaceUpdated` — the layout is part of the workspace config, so
   the existing event already carries it (no new `WmEvent` variant needed).
   The normalization is shared with config reloads through the layout
@@ -292,7 +297,8 @@ workspace), or appends to the end of the strip when it has none.
   workspace that is destroyed and later activated again comes back with
   its overridden layout, and `wm-reload-config` clears the overrides.
 - `cycle-layout [--workspace <name>]` — `set_workspace_layout` with the
-  next layout in `WorkspaceLayout::ALL` (`tiling → scrolling → tiling`).
+  next layout in `WorkspaceLayout::ALL`
+  (`tiling → scrolling → bsp → tiling`).
   The default keybinding is `alt+shift+v`.
 - `scroll --direction <left|right|up|down> [--amount <length>]` —
   `scroll_workspace` (new command). Offsets the subject workspace's

@@ -218,7 +218,8 @@ fn update_window_effects(
 #[cfg(test)]
 mod tests {
   use wm_common::{
-    ScrollConfig, TilingDirection, WorkspaceConfig, WorkspaceLayout,
+    BspConfig, ScrollConfig, TilingDirection, WorkspaceConfig,
+    WorkspaceLayout,
   };
 
   use super::*;
@@ -250,6 +251,7 @@ mod tests {
         axis,
         ..ScrollConfig::default()
       },
+      bsp: BspConfig::default(),
     }];
 
     config

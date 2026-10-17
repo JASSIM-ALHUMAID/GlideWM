@@ -127,6 +127,8 @@ workspaces:
     # - 'scrolling': Windows form a strip along the scroll axis, and the
     #   viewport scrolls to keep the focused window in view (inspired by
     #   niri/PaperWM).
+    # - 'bsp': Windows form a binary tree of splits; inserting a window
+    #   splits the focused window's space in half (like bspwm).
     layout: 'tiling'
     # Options for the scrolling layout (only used when layout is
     # 'scrolling').
@@ -144,9 +146,18 @@ workspaces:
     #  # - 'after_focused': Insert directly after the focused window.
     #  # - 'end': Append to the end of the strip.
     #  insert_position: 'after_focused'
+    # Options for the BSP layout (only used when layout is 'bsp').
+    #bsp:
+    #  # How the direction of a new split is chosen:
+    #  # - 'longest_side': Split the longer side of the focused window
+    #  #   (default, like bspwm).
+    #  # - 'alternate': Alternate the split direction with the depth of
+    #  #   the tree.
+    #  automatic_scheme: 'longest_side'
     # The layout can be switched at runtime, and the strip scrolled along
     # its axis without moving focus:
     #   `set-layout --layout scrolling --workspace 1`
+    #   `set-layout --layout bsp --workspace 1`
     #   `scroll --direction left --amount 10%`
   - name: '2'
   - name: '3'
@@ -247,9 +258,11 @@ keybindings:
   - commands: ['toggle-tiling-direction']
     bindings: ['alt+v']
 
-  # Cycle the layout used by the focused workspace (tiling -> scrolling).
+  # Cycle the layout used by the focused workspace
+  # (tiling -> scrolling -> bsp).
   # The layout can also be set directly, e.g.:
   #   `set-layout --layout scrolling`
+  #   `set-layout --layout bsp`
   #   `set-layout --layout tiling --workspace 2`
   # Runtime switches are kept for the session; set the workspace's
   # `layout` in this config for a permanent choice.

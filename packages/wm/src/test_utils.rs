@@ -6,8 +6,8 @@
 use bon::bon;
 use tokio::sync::mpsc;
 use wm_common::{
-  FloatingStateConfig, GapsConfig, ScrollConfig, TilingDirection,
-  WindowState, WorkspaceConfig, WorkspaceLayout,
+  BspConfig, FloatingStateConfig, GapsConfig, ScrollConfig,
+  TilingDirection, WindowState, WorkspaceConfig, WorkspaceLayout,
 };
 use wm_platform::{Dispatcher, Display, NativeWindow, Rect, RectDelta};
 
@@ -284,6 +284,7 @@ impl Workspace {
     #[builder(default = vec![])] non_tiling_windows: Vec<NonTilingWindow>,
     #[builder(default = WorkspaceLayout::Tiling)] layout: WorkspaceLayout,
     #[builder(default = ScrollConfig::default())] scroll: ScrollConfig,
+    #[builder(default = BspConfig::default())] bsp: BspConfig,
   ) -> Self {
     let config = WorkspaceConfig {
       name,
@@ -292,6 +293,7 @@ impl Workspace {
       keep_alive: false,
       layout,
       scroll,
+      bsp,
     };
 
     let workspace = Self::new(config, gaps_config, tiling_direction);

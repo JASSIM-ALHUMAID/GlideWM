@@ -78,6 +78,11 @@ impl Workspace {
     self.0.borrow_mut().gaps_config = gaps_config;
   }
 
+  /// Gaps config used for the workspace's containers.
+  pub fn gaps_config(&self) -> GapsConfig {
+    self.0.borrow().gaps_config.clone()
+  }
+
   /// Whether the workspace uses the scrolling layout.
   pub fn is_scrolling(&self) -> bool {
     self.0.borrow().config.layout == WorkspaceLayout::Scrolling

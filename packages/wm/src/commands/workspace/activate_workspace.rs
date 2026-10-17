@@ -122,7 +122,7 @@ fn workspace_config(
 
 #[cfg(test)]
 mod tests {
-  use wm_common::{ScrollConfig, WorkspaceLayout};
+  use wm_common::{BspConfig, ScrollConfig, WorkspaceLayout};
 
   use super::*;
 
@@ -138,6 +138,7 @@ mod tests {
       keep_alive: false,
       layout: WorkspaceLayout::Scrolling,
       scroll: ScrollConfig::default(),
+      bsp: BspConfig::default(),
     }];
 
     config

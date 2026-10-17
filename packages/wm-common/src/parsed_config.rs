@@ -389,8 +389,8 @@ pub struct WorkspaceConfig {
   #[serde(default = "default_bool::<false>")]
   pub keep_alive: bool,
 
-  /// Layout that the workspace uses: `'tiling'` (default) or
-  /// `'scrolling'`.
+  /// Layout that the workspace uses: `'tiling'` (default),
+  /// `'scrolling'`, or `'bsp'`.
   #[serde(default)]
   pub layout: WorkspaceLayout,
 
@@ -398,6 +398,10 @@ pub struct WorkspaceConfig {
   /// `'scrolling'`.
   #[serde(default)]
   pub scroll: ScrollConfig,
+
+  /// Options for the BSP layout. Only read when `layout` is `'bsp'`.
+  #[serde(default)]
+  pub bsp: BspConfig,
 }
 
 /// Layout that a workspace uses to arrange its tiling children.
@@ -411,6 +415,11 @@ pub enum WorkspaceLayout {
   /// Children form a strip along the scroll axis. The viewport scrolls
   /// to keep the focused child in view.
   Scrolling,
+
+  /// Children form a binary tree of split containers ("binary space
+  /// partitioning", like bspwm). Inserting a window splits the focused
+  /// window's space in half.
+  Bsp,
 }
 
 impl FromStr for WorkspaceLayout {
@@ -427,11 +436,15 @@ impl FromStr for WorkspaceLayout {
   ///
   /// let layout = WorkspaceLayout::from_str("scrolling");
   /// assert_eq!(layout.unwrap(), WorkspaceLayout::Scrolling);
+  ///
+  /// let layout = WorkspaceLayout::from_str("bsp");
+  /// assert_eq!(layout.unwrap(), WorkspaceLayout::Bsp);
   /// ```
   fn from_str(unparsed: &str) -> anyhow::Result<Self> {
     match unparsed {
       "tiling" => Ok(Self::Tiling),
       "scrolling" => Ok(Self::Scrolling),
+      "bsp" => Ok(Self::Bsp),
       _ => bail!("Not a valid workspace layout: {}", unparsed),
     }
   }
@@ -442,7 +455,7 @@ impl WorkspaceLayout {
   /// command cycles through them.
   ///
   /// Keep in sync with [`WorkspaceLayout::next`].
-  pub const ALL: [Self; 2] = [Self::Tiling, Self::Scrolling];
+  pub const ALL: [Self; 3] = [Self::Tiling, Self::Scrolling, Self::Bsp];
 
   /// The next layout in the cycle, wrapping around at the end.
   ///
@@ -452,7 +465,8 @@ impl WorkspaceLayout {
   pub fn next(&self) -> Self {
     match self {
       Self::Tiling => Self::Scrolling,
-      Self::Scrolling => Self::Tiling,
+      Self::Scrolling => Self::Bsp,
+      Self::Bsp => Self::Tiling,
     }
   }
 }
@@ -508,6 +522,33 @@ pub enum ScrollInsertPosition {
 
   /// Append to the end of the strip.
   End,
+}
+
+/// Options for the BSP layout.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct BspConfig {
+  /// How the direction of a new split is chosen when a window splits
+  /// the focused window's space.
+  pub automatic_scheme: BspAutomaticScheme,
+}
+
+/// How new split directions are chosen in the BSP layout.
+///
+/// Mirrors the `automatic_scheme` setting of bspwm.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BspAutomaticScheme {
+  /// Split the longer side of the focused container's rect: a wide rect
+  /// is cut into side-by-side children, a tall rect into stacked
+  /// children.
+  #[default]
+  LongestSide,
+
+  /// Alternate the split direction with the depth of the tree: children
+  /// of a horizontal split are split vertically and vice versa. Splits
+  /// at the workspace's root level use the workspace's tiling direction.
+  Alternate,
 }
 
 /// Helper function for setting a default value for a boolean field.
