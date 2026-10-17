@@ -21,7 +21,8 @@
 
 use anyhow::Context;
 use wm_common::{
-  BspAutomaticScheme, GapsConfig, TilingDirection, WindowState,
+  BspAutomaticScheme, GapsConfig, TilingDirection, VecDequeExt,
+  WindowState,
 };
 use wm_platform::Rect;
 
@@ -206,6 +207,11 @@ pub(super) fn rebuild_tree(workspace: &Workspace) -> anyhow::Result<()> {
     return Ok(());
   }
 
+  // The leaf that is first in focus order (where focus falls back to in
+  // this workspace). Captured before detaching: the rebuilt tree's focus
+  // order would otherwise start out in attach order.
+  let focus_target = workspace.descendant_focus_order().next();
+
   // Detach the children from the workspace without redistributing the
   // freed up space; the tree is built from scratch below.
   let child_ids =
@@ -234,7 +240,42 @@ pub(super) fn rebuild_tree(workspace: &Workspace) -> anyhow::Result<()> {
 
   attach_container(&tree.clone().into(), &workspace.clone().into(), None)?;
 
+  // Detaching and re-attaching the children put the new tree at the back
+  // of the workspace's focus order, and its splits in attach order. The
+  // focused container is resolved from focus order (see
+  // `WmState::focused_container`), so restore the captured leaf as the
+  // first in focus order — without this, the first window of the new
+  // tree would look like the focused one (e.g. a window opened right
+  // after switching layouts would be inserted next to the wrong window).
+  if let Some(focus_target) =
+    focus_target.filter(Container::is_tiling_window)
+  {
+    promote_focus_order(&focus_target, workspace);
+  }
+
   Ok(())
+}
+
+/// Shifts `focus_target` and its ancestors to the front of their
+/// parents' focus order, up to and including the workspace's child.
+///
+/// The workspace itself is left as-is in its parent's focus order, so
+/// rebuilding a workspace that is not the focused one doesn't change
+/// which workspace is treated as focused.
+fn promote_focus_order(focus_target: &Container, workspace: &Workspace) {
+  let mut target = focus_target.clone();
+
+  while let Some(parent) = target.parent() {
+    parent
+      .borrow_child_focus_order_mut()
+      .shift_to_index(0, target.id());
+
+    if parent.id() == workspace.id() {
+      break;
+    }
+
+    target = parent;
+  }
 }
 
 /// Recursively builds a balanced binary split tree from `items`, in
@@ -674,6 +715,22 @@ mod tests {
     assert!((windows[0].tiling_size() - 0.5).abs() < f32::EPSILON);
     assert!((windows[1].tiling_size() - 0.5).abs() < f32::EPSILON);
     assert!((windows[2].tiling_size() - 0.5).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn rebuild_preserves_focus_order() {
+    let (state, workspace, windows) =
+      mock_bsp_state(2, 1, BspAutomaticScheme::LongestSide);
+
+    // Sanity check: the second window is the focused one.
+    assert_eq!(state.focused_container().unwrap().id(), windows[1].id());
+
+    rebuild_tree(&workspace).unwrap();
+
+    // The rebuilt tree's focus order still puts the focused window
+    // first, so `WmState::focused_container` keeps resolving to it (a
+    // window opened after a layout switch is inserted next to it).
+    assert_eq!(state.focused_container().unwrap().id(), windows[1].id());
   }
 
   #[test]

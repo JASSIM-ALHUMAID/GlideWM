@@ -112,7 +112,9 @@ chosen per the workspace's `bsp.automatic_scheme` config:
 Switching *to* the layout rebuilds the workspace's children as a
 balanced binary tree (`bsp::rebuild_tree`), so the layout activates as a
 mosaic instead of applying whatever tree the previous layout left
-behind. Switching *from* BSP to the scrolling layout dissolves the
+behind. The rebuild preserves the focused window as the workspace's
+first leaf in focus order, so focus and subsequent insertions keep
+targeting it. Switching *from* BSP to the scrolling layout dissolves the
 tree's root split first (`bsp::collapse_root_split`), so the tree's
 children become individual strip items.
 
