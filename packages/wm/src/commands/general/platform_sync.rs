@@ -271,20 +271,6 @@ fn redraw_containers(
       continue;
     }
 
-    // Transition display state depending on whether window will be
-    // shown or hidden.
-    window.set_display_state(
-      match (window.display_state(), workspace.is_displayed()) {
-        (DisplayState::Hidden | DisplayState::Hiding, true) => {
-          DisplayState::Showing
-        }
-        (DisplayState::Shown | DisplayState::Showing, false) => {
-          DisplayState::Hiding
-        }
-        _ => window.display_state(),
-      },
-    );
-
     // Compute the rect to position the window at. Tiling windows of a
     // scrolling workspace are clamped just beyond the viewport edge
     // when they are scrolled out of view.
@@ -295,6 +281,17 @@ fn redraw_containers(
         continue;
       }
     };
+
+    // Transition display state depending on whether window will be
+    // shown or hidden. Scrolled-out windows are hidden by the scrolling
+    // layout itself, so they transition to `Hiding` here; otherwise
+    // `handle_window_hidden` would treat the hide as externally
+    // initiated and unmanage the window.
+    window.set_display_state(transition_display_state(
+      window.display_state(),
+      workspace.is_displayed(),
+      placement.is_scrolled_out,
+    ));
 
     let is_visible = matches!(
       window.display_state(),
@@ -354,6 +351,34 @@ fn redraw_containers(
   }
 
   Ok(())
+}
+
+/// Transition of a window's display state based on whether it will be
+/// shown or hidden during the current sync.
+///
+/// Windows are hidden either because their workspace is not displayed or
+/// because they are scrolled out of the viewport of a scrolling
+/// workspace. In both cases the hide is initiated by the window manager,
+/// so the state transitions through `Hiding`. This matters for
+/// `handle_window_hidden`, which otherwise treats a hidden window as
+/// externally hidden (e.g. hidden to the tray) and unmanages it.
+fn transition_display_state(
+  display_state: DisplayState,
+  workspace_is_displayed: bool,
+  is_scrolled_out: bool,
+) -> DisplayState {
+  match (display_state, workspace_is_displayed, is_scrolled_out) {
+    // Window will be shown: start the showing transition.
+    (DisplayState::Hidden | DisplayState::Hiding, true, false) => {
+      DisplayState::Showing
+    }
+    // Window will be hidden: start the hiding transition.
+    (DisplayState::Shown | DisplayState::Showing, _, true)
+    | (DisplayState::Shown | DisplayState::Showing, false, _) => {
+      DisplayState::Hiding
+    }
+    (display_state, _, _) => display_state,
+  }
 }
 
 /// Placement that a window should be positioned at, and whether it is
@@ -838,5 +863,68 @@ mod tests {
 
     assert!(!placement.is_scrolled_out);
     assert_eq!(placement.rect, rect);
+  }
+
+  #[test]
+  fn transitions_to_hiding_when_scrolled_out() {
+    // Scrolled-out windows of a displayed workspace are hidden by the
+    // scrolling layout; they must start a hiding transition so that
+    // `handle_window_hidden` doesn't unmanage them.
+    assert_eq!(
+      transition_display_state(DisplayState::Shown, true, true),
+      DisplayState::Hiding
+    );
+    assert_eq!(
+      transition_display_state(DisplayState::Showing, true, true),
+      DisplayState::Hiding
+    );
+  }
+
+  #[test]
+  fn keeps_hidden_windows_hidden_while_scrolled_out() {
+    assert_eq!(
+      transition_display_state(DisplayState::Hidden, true, true),
+      DisplayState::Hidden
+    );
+    assert_eq!(
+      transition_display_state(DisplayState::Hiding, true, true),
+      DisplayState::Hiding
+    );
+  }
+
+  #[test]
+  fn transitions_to_showing_when_scrolled_back_in() {
+    assert_eq!(
+      transition_display_state(DisplayState::Hidden, true, false),
+      DisplayState::Showing
+    );
+    assert_eq!(
+      transition_display_state(DisplayState::Hiding, true, false),
+      DisplayState::Showing
+    );
+  }
+
+  #[test]
+  fn keeps_shown_window_state_when_scrolled_in() {
+    assert_eq!(
+      transition_display_state(DisplayState::Shown, true, false),
+      DisplayState::Shown
+    );
+  }
+
+  #[test]
+  fn hides_windows_of_non_displayed_workspaces() {
+    assert_eq!(
+      transition_display_state(DisplayState::Shown, false, false),
+      DisplayState::Hiding
+    );
+    assert_eq!(
+      transition_display_state(DisplayState::Showing, false, true),
+      DisplayState::Hiding
+    );
+    assert_eq!(
+      transition_display_state(DisplayState::Hidden, false, false),
+      DisplayState::Hidden
+    );
   }
 }
