@@ -41,7 +41,9 @@ pub enum WmEvent {
   UserConfigChanged {
     config_path: String,
     config_string: String,
-    parsed_config: ParsedConfig,
+    // Boxed because `ParsedConfig` is large and `WmEvent` is passed
+    // around by value.
+    parsed_config: Box<ParsedConfig>,
   },
   WindowManaged {
     managed_window: ContainerDto,

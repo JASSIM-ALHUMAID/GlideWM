@@ -83,7 +83,7 @@ pub fn reload_config(
       .context("Invalid config path.")?
       .to_string(),
     config_string: config.value_str.clone(),
-    parsed_config: config.value.clone(),
+    parsed_config: Box::new(config.value.clone()),
   });
 
   // Run config reload commands.
