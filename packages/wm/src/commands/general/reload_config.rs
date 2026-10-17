@@ -2,12 +2,15 @@ use anyhow::Context;
 use tracing::{info, warn};
 #[cfg(target_os = "windows")]
 use wm_common::{HideMethod, ParsedConfig};
-use wm_common::{WindowRuleEvent, WmEvent};
+use wm_common::{WindowRuleEvent, WmEvent, WorkspaceLayout};
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 
 use crate::{
-  commands::{window::run_window_rules, workspace::sort_workspaces},
+  commands::{
+    window::run_window_rules,
+    workspace::{normalize_for_scrolling, sort_workspaces},
+  },
   traits::{
     CommonGetters, TilingDirectionGetters, TilingSizeGetters,
     WindowGetters,
@@ -95,7 +98,12 @@ pub fn reload_config(
   Ok(())
 }
 
-/// Update configs of active workspaces.
+/// Updates configs of active workspaces.
+///
+/// When a workspace's config switches it to the scrolling layout, its
+/// state is normalized the same way as in the `set-layout` command (see
+/// `normalize_for_scrolling`), and the scroll axis from the config is
+/// applied as the workspace's tiling direction.
 fn update_workspace_configs(
   state: &mut WmState,
   config: &UserConfig,
@@ -127,15 +135,28 @@ fn update_workspace_configs(
       }
       Some(workspace_config) => {
         if *workspace_config != workspace.config() {
-          let prev_layout = workspace.config().layout;
+          let prev_config = workspace.config();
 
           workspace.set_config(workspace_config.clone());
 
-          // Reset scroll state when the layout config changed.
-          if prev_layout != workspace_config.layout {
-            workspace
-              .set_tiling_direction(workspace_config.scroll.axis.clone());
-            workspace.set_scroll_offset(0);
+          if workspace_config.layout == WorkspaceLayout::Scrolling {
+            // The scroll axis doubles as the workspace's tiling
+            // direction while the scrolling layout is active. Keep it
+            // in sync with the config.
+            if prev_config.layout != WorkspaceLayout::Scrolling
+              || prev_config.scroll.axis != workspace_config.scroll.axis
+            {
+              workspace.set_tiling_direction(
+                workspace_config.scroll.axis.clone(),
+              );
+            }
+
+            // Normalize state when the layout was just switched to
+            // scrolling, so that the switch behaves like the
+            // `set-layout` command.
+            if prev_config.layout != WorkspaceLayout::Scrolling {
+              normalize_for_scrolling(workspace, state)?;
+            }
           }
 
           sort_workspaces(&monitor, config)?;
@@ -206,4 +227,151 @@ fn update_window_effects(
   state.pending_sync.queue_all_effects_update();
 
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_common::{
+    ScrollConfig, TilingDirection, WorkspaceConfig, WorkspaceLayout,
+  };
+
+  use super::*;
+  use crate::{
+    commands::container::{attach_container, set_focused_descendant},
+    models::{Monitor, TilingWindow, Workspace},
+    traits::{
+      PositionGetters, TilingDirectionGetters, TilingSizeGetters,
+      MIN_TILING_SIZE,
+    },
+  };
+
+  /// Creates a `UserConfig` that switches the given workspace to the
+  /// scrolling layout with the given scroll axis.
+  fn config_for_workspace_layout(
+    workspace: &Workspace,
+    axis: TilingDirection,
+  ) -> UserConfig {
+    let mut config = UserConfig::mock();
+
+    config.value.workspaces = vec![WorkspaceConfig {
+      name: workspace.config().name.clone(),
+      display_name: None,
+      bind_to_monitor: None,
+      keep_alive: false,
+      layout: WorkspaceLayout::Scrolling,
+      scroll: ScrollConfig {
+        axis,
+        ..ScrollConfig::default()
+      },
+    }];
+
+    config
+  }
+
+  #[test]
+  fn clamps_sizes_and_applies_axis_on_layout_change() {
+    let workspace = Workspace::mock().call();
+    let first = TilingWindow::mock().call();
+    let second = TilingWindow::mock().call();
+
+    attach_container(
+      &first.clone().into(),
+      &workspace.clone().into(),
+      None,
+    )
+    .unwrap();
+    attach_container(
+      &second.clone().into(),
+      &workspace.clone().into(),
+      None,
+    )
+    .unwrap();
+
+    // A size that is out of range when interpreted as a viewport
+    // fraction.
+    first.set_tiling_size(0.005);
+    second.set_tiling_size(0.75);
+
+    let monitor =
+      Monitor::mock().workspaces(vec![workspace.clone()]).call();
+
+    let mut state = WmState::mock();
+    attach_container(
+      &monitor.clone().into(),
+      &state.root_container.clone().into(),
+      None,
+    )
+    .unwrap();
+
+    let config =
+      config_for_workspace_layout(&workspace, TilingDirection::Vertical);
+
+    update_workspace_configs(&mut state, &config).unwrap();
+
+    assert!(workspace.is_scrolling());
+
+    // The config's scroll axis is applied as the tiling direction.
+    assert_eq!(workspace.tiling_direction(), TilingDirection::Vertical);
+
+    // Out-of-range sizes are clamped to valid viewport fractions.
+    assert!((first.tiling_size() - MIN_TILING_SIZE).abs() < f32::EPSILON);
+    assert!((second.tiling_size() - 0.75).abs() < f32::EPSILON);
+
+    // The stale scroll offset is reset.
+    assert_eq!(workspace.scroll_offset(), 0);
+  }
+
+  #[test]
+  fn scrolls_focused_item_into_view_on_layout_change() {
+    let workspace = Workspace::mock().call();
+    let first = TilingWindow::mock().call();
+    let second = TilingWindow::mock().call();
+
+    attach_container(
+      &first.clone().into(),
+      &workspace.clone().into(),
+      None,
+    )
+    .unwrap();
+    attach_container(
+      &second.clone().into(),
+      &workspace.clone().into(),
+      None,
+    )
+    .unwrap();
+
+    // The strip is wider than the viewport, so the second window needs
+    // scrolling into view.
+    first.set_tiling_size(0.75);
+    second.set_tiling_size(0.75);
+
+    let monitor =
+      Monitor::mock().workspaces(vec![workspace.clone()]).call();
+
+    let mut state = WmState::mock();
+    attach_container(
+      &monitor.clone().into(),
+      &state.root_container.clone().into(),
+      None,
+    )
+    .unwrap();
+
+    set_focused_descendant(&second.clone().into(), None);
+
+    let config =
+      config_for_workspace_layout(&workspace, TilingDirection::Horizontal);
+
+    update_workspace_configs(&mut state, &config).unwrap();
+
+    assert_eq!(
+      workspace.scroll_offset(),
+      workspace.max_scroll_offset().unwrap()
+    );
+
+    let viewport_rect = workspace.to_rect().unwrap();
+    let item_rect = second.to_rect().unwrap();
+
+    assert!(item_rect.x() >= viewport_rect.x());
+    assert!(item_rect.right <= viewport_rect.right);
+  }
 }

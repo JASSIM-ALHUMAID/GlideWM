@@ -260,6 +260,10 @@ workspace), or appends to the end of the strip when it has none.
   tiling keeps the sizes (reinterpreted as shares of the workspace).
   Emits `WorkspaceUpdated` — the layout is part of the workspace config, so
   the existing event already carries it (no new `WmEvent` variant needed).
+  The normalization is shared with config reloads (`normalize_for_scrolling`):
+  switching a workspace to scrolling via its config applies the same
+  clamp/reset/ensure-visible steps, and while a workspace is scrolling, a
+  changed `scroll.axis` is applied as its runtime axis.
 - `scroll --direction <left|right|up|down> [--amount <length>]` —
   `scroll_workspace` (new command). Offsets the subject workspace's
   `scroll_offset` without moving focus; default amount is 10% of the
@@ -347,7 +351,7 @@ reviewable.
 | `packages/wm-common/src/parsed_config.rs` | `WorkspaceLayout` enum, `ScrollConfig`, fields on `WorkspaceConfig` (+ defaults, serde) |
 | `resources/assets/sample-config.yaml` | commented example block |
 | `packages/wm/src/models/workspace.rs` | `layout` + `scroll_offset` fields, getters/setters, `is_scrolling()`, `viewport_rect()`, `strip_extent()` |
-| `packages/wm/src/commands/workspace/update_workspace_config.rs`, `packages/wm/src/commands/general/reload_config.rs` | apply `layout`/`scroll` config on workspace creation & reload |
+| `packages/wm/src/commands/workspace/update_workspace_config.rs`, `packages/wm/src/commands/general/reload_config.rs` | apply `layout`/`scroll` config on workspace creation & reload; reload normalizes layout switches via `normalize_for_scrolling` (§4.6) |
 | tests | config parse + workspace construction |
 
 ### P2 — core geometry
@@ -394,7 +398,7 @@ reviewable.
 | `packages/wm-common/src/app_command.rs` | `SetLayout`, `Scroll` variants; parsing tests for both |
 | `packages/wm-common/src/parsed_config.rs` | `FromStr` for `WorkspaceLayout` (clap parsing of `--layout`) |
 | `packages/wm-common/src/dtos/workspace_dto.rs` | expose `layout`, `scroll_offset` (Zebar/UI can render a scrollbar) |
-| `packages/wm/src/commands/workspace/set_workspace_layout.rs` (new) | runtime layout switch (clamp sizes, reset/ensure offset, `WorkspaceUpdated`) |
+| `packages/wm/src/commands/workspace/set_workspace_layout.rs` (new) | runtime layout switch (clamp sizes, reset/ensure offset, `WorkspaceUpdated`); `normalize_for_scrolling` is shared with config reloads |
 | `packages/wm/src/commands/workspace/scroll_workspace.rs` (new) | offset-only scroll command (axis check, clamp, redraw) |
 | `packages/wm/src/models/workspace.rs` | DTO fields in `to_dto` |
 | `packages/wm/src/wm.rs` | dispatch for `SetLayout`/`Scroll` |

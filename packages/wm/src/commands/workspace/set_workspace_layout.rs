@@ -32,24 +32,7 @@ pub fn set_workspace_layout(
   workspace.set_config(updated_config);
 
   if *layout == WorkspaceLayout::Scrolling {
-    // Sizes of strip items are fractions of the viewport. Clamp sizes
-    // that were set as shares of the workspace (e.g. `1/3` with three
-    // windows) into the valid range.
-    for child in workspace.tiling_children() {
-      if let Ok(tiling_child) = child.as_tiling_container() {
-        let clamped_size =
-          tiling_child.tiling_size().clamp(MIN_TILING_SIZE, 1.);
-        tiling_child.set_tiling_size(clamped_size);
-      }
-    }
-
-    // Reset the offset and scroll the focused descendant into view. This
-    // is a no-op if the focused container is not in this workspace.
-    workspace.set_scroll_offset(0);
-
-    if let Some(focused_container) = state.focused_container() {
-      workspace.ensure_descendant_visible(&focused_container)?;
-    }
+    normalize_for_scrolling(workspace, state)?;
   }
 
   state
@@ -59,6 +42,40 @@ pub fn set_workspace_layout(
   state.emit_event(WmEvent::WorkspaceUpdated {
     updated_workspace: workspace.to_dto()?,
   });
+
+  Ok(())
+}
+
+/// Normalizes a workspace's state for the scrolling layout.
+///
+/// Clamps the sizes of the workspace's top-level tiling children into the
+/// range of valid viewport fractions, resets the scroll offset, and
+/// scrolls the focused descendant into view (a no-op if the focused
+/// container is not in the workspace).
+///
+/// Both the `set-layout` command and config reloads that switch a
+/// workspace's layout to `scrolling` call this, so that the two paths
+/// behave identically.
+pub fn normalize_for_scrolling(
+  workspace: &Workspace,
+  state: &WmState,
+) -> anyhow::Result<()> {
+  // Sizes of strip items are fractions of the viewport. Clamp sizes
+  // that were set as shares of the workspace (e.g. `1/3` with three
+  // windows) into the valid range.
+  for child in workspace.tiling_children() {
+    if let Ok(tiling_child) = child.as_tiling_container() {
+      let clamped_size =
+        tiling_child.tiling_size().clamp(MIN_TILING_SIZE, 1.);
+      tiling_child.set_tiling_size(clamped_size);
+    }
+  }
+
+  workspace.set_scroll_offset(0);
+
+  if let Some(focused_container) = state.focused_container() {
+    workspace.ensure_descendant_visible(&focused_container)?;
+  }
 
   Ok(())
 }
