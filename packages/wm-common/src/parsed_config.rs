@@ -155,7 +155,9 @@ pub struct WorkspaceSwitchAnimationConfig {
   /// Style of the animation.
   pub style: WorkspaceSwitchAnimationStyle,
 
-  /// Edge that the incoming workspace slides in from.
+  /// Where the incoming workspace slides in from. See
+  /// [`AnimationDirection`] for how each value maps onto an edge or a
+  /// travel direction.
   pub direction: AnimationDirection,
 
   /// How long the animation lasts, in milliseconds.
@@ -229,7 +231,10 @@ pub enum WindowOpenAnimationStyle {
   Slide,
 }
 
-/// Edge that a workspace slides in from.
+/// Where a workspace slides in from. `left`/`right` name the side the
+/// incoming workspace comes in from; `up`/`down` name the direction the
+/// windows travel (`up` rises from the bottom edge, `down` descends
+/// from the top edge).
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AnimationDirection {

@@ -53,10 +53,15 @@ general:
       # - 'slidevert': Windows slide vertically.
       style: 'slide'
 
-      # Edge that the incoming workspace slides in from. 'auto' derives
-      # the direction from the workspace switch (e.g. focusing the next
-      # workspace slides in from the right). Directions that don't match
-      # the style's axis are treated as 'auto'.
+      # Where the incoming workspace slides in from. 'auto' derives the
+      # direction from the workspace switch (e.g. focusing the next
+      # workspace slides in from the right; with 'slidevert' it rises
+      # from the bottom edge).
+      # 'left'/'right': the side the incoming workspace comes in from.
+      # 'up'/'down': the direction the windows travel ('up' rises from
+      # the bottom edge, 'down' descends from the top edge).
+      # Directions that don't match the style's axis are treated as
+      # 'auto'.
       # - 'auto' | 'left' | 'right' | 'up' | 'down'.
       direction: 'auto'
 
