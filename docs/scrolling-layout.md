@@ -102,6 +102,15 @@ Note: `tiling_size` changes semantics from "share of remaining space" to
 "fraction of viewport" only under `Layout::Scrolling`. Switching layouts
 reinterprets existing values; clamp/normalize on switch (see §4.5).
 
+Lone item rule (Niri's "a single column fills the workspace"): when the
+workspace has exactly one tiling child, its effective extent is the **full
+viewport extent**, regardless of its stored `tiling_size`
+(`Workspace::strip_item_extent`). The stored size is preserved and applies
+again as soon as a second tiling child exists; closing back down to one item
+re-expands it. `strip_extent` uses the same rule, so a lone item yields
+`max_scroll_offset == 0`. Consequence: resizing a lone window only updates its
+stored fraction (observable once it stops being alone).
+
 ---
 
 ## 3. Config schema
@@ -192,7 +201,8 @@ order-based sibling logic navigates the strip unmodified. Covered by tests in
   (clamped to `[MIN_TILING_SIZE, 1.0]`) on tiling windows whose insertion
   parent is the scrolling workspace itself (i.e. which land as strip items).
   Windows inserted into a column get the normal attach sizing along the
-  column's axis.
+  column's axis. A newly inserted strip item that is the workspace's only
+  tiling child displays at the full viewport extent (lone item rule, §2.4).
 
 `move_window_to_workspace` (moving windows between workspaces, covered in
 §4.5) inserts tiling windows at the strip level after the strip item that
@@ -330,6 +340,15 @@ Reference implementations studied:
    `platform_sync` and scrolls the focused window fully into the viewport
    before the cursor jump is processed, so the focused rect's center is
    on-screen whenever the jump happens.
+7. Hiding a scrolled-out window must go through a `Hiding` display-state
+   transition (`transition_display_state` in `platform_sync.rs`), exactly like
+   windows of a non-displayed workspace. Both hide methods emit an OS event
+   (`EVENT_OBJECT_HIDE` / `EVENT_OBJECT_CLOAKED` → `WindowEvent::Hidden`); if
+   the window's state were still `Shown`, `handle_window_hidden` would treat
+   the hide as app-initiated and **unmanage** the window — collapsing the
+   strip and making scrolling appear broken. Regression tests:
+   `platform_sync::tests::transitions_to_hiding_when_scrolled_out` and
+   `platform_sync::tests::keeps_hidden_windows_hidden_while_scrolled_out`.
 
 Platform trait changes needed for v1: none beyond reusing cloak/hide/show —
 `window_placement` computes the clamped rect and visibility; `reposition_window`
