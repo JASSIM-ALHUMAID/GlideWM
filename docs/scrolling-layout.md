@@ -1,10 +1,17 @@
 # Scrolling layout (Niri-style) — design & implementation plan
 
-Status: **v1 implemented - P1–P5 complete (config/model, core geometry, navigation & off-viewport sync, mutation semantics, commands & IPC); P6 (region clipping) deferred** · Branch: `feat/scrolling-layout` · Fork: `JASSIM-ALHUMAID/glazewm` (upstream: `glzr-io/glazewm`)
+Status: **v1 implemented - P1–P5 complete (config/model, core geometry, navigation & off-viewport sync, mutation semantics, commands & IPC); P6 (region clipping) deferred; P7 (layout extraction into `packages/wm/src/layouts/`) complete** · Branch: `feat/scrolling-layout` · Fork: `JASSIM-ALHUMAID/glazewm` (upstream: `glzr-io/glazewm`)
 
 This document organizes the work for adding a Niri/Hyprscroller-style **scrolling
 layout** to GlazeWM. It is the working plan for this branch: model, config
 schema, runtime semantics, platform concerns, and a file-by-file change map.
+
+> The scrolling implementation was since extracted into the pluggable layout
+> system under `packages/wm/src/layouts/` (see §6.7 and `docs/layouts.md`).
+> File paths in the phase tables below mark where each change originally
+> landed; code that §4/§5 describes as living in `commands/` or `traits/` now
+> lives in `layouts::scrolling` behind a dispatch function (e.g.
+> `layouts::resize_tiling_container`).
 
 Upstream prior art that validates the approach:
 `feat/accordian-v1` adds a layout mode by extending `TilingDirection`, branching
@@ -270,10 +277,15 @@ workspace), or appends to the end of the strip when it has none.
   tiling keeps the sizes (reinterpreted as shares of the workspace).
   Emits `WorkspaceUpdated` — the layout is part of the workspace config, so
   the existing event already carries it (no new `WmEvent` variant needed).
-  The normalization is shared with config reloads (`normalize_for_scrolling`):
-  switching a workspace to scrolling via its config applies the same
-  clamp/reset/ensure-visible steps, and while a workspace is scrolling, a
-  changed `scroll.axis` is applied as its runtime axis.
+  The normalization is shared with config reloads through the layout
+  dispatch layer (`layouts::on_layout_changed` /
+  `layouts::on_workspace_config_reloaded`): switching a workspace to
+  scrolling via its config applies the same clamp/reset/ensure-visible
+  steps, and while a workspace is scrolling, a changed `scroll.axis` is
+  applied as its runtime axis.
+- `cycle-layout [--workspace <name>]` — `set_workspace_layout` with the
+  next layout in `WorkspaceLayout::ALL` (`tiling → scrolling → tiling`).
+  The default keybinding is `alt+shift+v`.
 - `scroll --direction <left|right|up|down> [--amount <length>]` —
   `scroll_workspace` (new command). Offsets the subject workspace's
   `scroll_offset` without moving focus; default amount is 10% of the
@@ -351,9 +363,9 @@ Reference implementations studied:
    `platform_sync::tests::keeps_hidden_windows_hidden_while_scrolled_out`.
 
 Platform trait changes needed for v1: none beyond reusing cloak/hide/show —
-`window_placement` computes the clamped rect and visibility; `reposition_window`
-applies both (the clamped rect via the same `SetWindowPos`/`set_frame` call a
-normal sync would use).
+`layouts::window_placement` computes the clamped rect and visibility
+(`layouts::WindowPlacement`); `reposition_window` applies both (the clamped
+rect via the same `SetWindowPos`/`set_frame` call a normal sync would use).
 
 
 ---
@@ -429,6 +441,29 @@ reviewable.
 - Region clipping via `SetWindowRgn` — see §5; revisit only if edge spillover
   on multi-monitor setups proves annoying. LeopardWM's
   `platform_win32/src/clipping_proof.rs` is the reference if ever needed.
+
+### P7 — layout extraction (pluggable layouts)
+
+Moved layout behavior out of the command/model call sites so that layouts
+are pluggable (see `docs/layouts.md` for the architecture).
+
+| File | Change |
+| --- | --- |
+| `packages/wm/src/layouts/mod.rs` (new) | Dispatch functions for every layout-specific question; `WindowPlacement`, `DirectChildResize`; moved resize tests |
+| `packages/wm/src/layouts/scrolling.rs` (new) | All strip math/semantics (rects, insert, move, resize, scroll, placement, normalize) |
+| `packages/wm/src/layouts/tiling.rs` (new) | Default tiling behaviors, extracted from command implementations |
+| `packages/wm/src/traits/position_getters.rs` | Macro delegates rect math to `layouts::child_rect` |
+| `packages/wm/src/traits/tiling_size_getters.rs` | Direct-child resize via `layouts::direct_child_resize` |
+| `packages/wm/src/models/workspace.rs` | Strip math moved out; keeps `scroll_offset` state and `layout()`/`is_scrolling()` accessors |
+| `packages/wm/src/commands/container/resize_tiling_container.rs` | Deleted; dispatched via `layouts::resize_tiling_container` |
+| `packages/wm/src/commands/{container,window,workspace,general}/*`, `packages/wm/src/events/handle_mouse_move.rs` | Call sites rewired to `layouts::*`; no match on `WorkspaceLayout` outside `layouts` |
+| `packages/wm-common/src/parsed_config.rs` | `WorkspaceLayout::ALL` + `next()` (cycle order, kept in sync by test) |
+| `packages/wm-common/src/app_command.rs` | `CycleLayout` variant + parsing test |
+| `packages/wm/src/wm.rs` | Dispatch for `CycleLayout` |
+| `packages/wm/src/commands/workspace/set_workspace_layout.rs` | Uses `layouts::on_layout_changed`; `normalize_for_scrolling` moved to `layouts::scrolling::normalize` |
+| `packages/wm/src/commands/general/reload_config.rs` | Uses `layouts::on_workspace_config_reloaded` |
+| `resources/assets/sample-config.yaml` | `cycle-layout` keybinding (`alt+shift+v`) |
+| tests | Moved into the layout modules (strip resize/clamp, placement clamping); dispatch-level test for non-scrolling placement |
 
 ---
 
