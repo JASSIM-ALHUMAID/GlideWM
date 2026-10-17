@@ -50,12 +50,12 @@ general:
     workspace_switch:
       # - 'none': No animation.
       # - 'slide': Windows slide horizontally.
-      # - 'slidevert': Windows slide vertically.
+      # - 'slide_vert': Windows slide vertically.
       style: 'slide'
 
       # Where the incoming workspace slides in from. 'auto' derives the
       # direction from the workspace switch (e.g. focusing the next
-      # workspace slides in from the right; with 'slidevert' it rises
+      # workspace slides in from the right; with 'slide_vert' it rises
       # from the bottom edge).
       # 'left'/'right': the side the incoming workspace comes in from.
       # 'up'/'down': the direction the windows travel ('up' rises from

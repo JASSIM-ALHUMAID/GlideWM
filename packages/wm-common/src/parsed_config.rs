@@ -192,6 +192,10 @@ pub enum WorkspaceSwitchAnimationStyle {
   Slide,
 
   /// Same as `slide`, but vertically.
+  ///
+  /// Hyprland spells this style `slidevert`; that spelling is accepted
+  /// as an alias.
+  #[serde(alias = "slidevert")]
   SlideVert,
 }
 

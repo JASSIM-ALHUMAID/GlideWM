@@ -137,7 +137,7 @@ impl SlideEdge {
     direction: AnimationDirection,
     is_forward: bool,
   ) -> Self {
-    // The vertical style (`slidevert`) slides along the y-axis and the
+    // The vertical style (`slide_vert`) slides along the y-axis and the
     // horizontal style (`slide`) slides along the x-axis. Directions
     // that don't match the style's axis are treated as `auto`.
     match style {
