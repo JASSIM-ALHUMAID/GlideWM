@@ -165,60 +165,15 @@ macro_rules! impl_position_getters_as_resizable {
 
 #[cfg(test)]
 mod tests {
-  use wm_common::{
-    GapsConfig, ScrollAlign, ScrollConfig, WorkspaceLayout,
-  };
+  use wm_common::{GapsConfig, ScrollAlign, ScrollConfig};
   use wm_platform::LengthValue;
 
   use super::*;
   use crate::{
     commands::container::attach_container,
     models::{Monitor, TilingWindow},
+    test_utils::mock_scrolling_workspace,
   };
-
-  /// Creates a scrolling workspace attached to a mock monitor, with the
-  /// given number of equally-sized tiling windows.
-  fn scrolling_workspace(
-    axis: TilingDirection,
-    window_count: usize,
-    window_fraction: f32,
-    gaps_config: &GapsConfig,
-    scroll_config: ScrollConfig,
-  ) -> (Workspace, Vec<TilingWindow>) {
-    let workspace = Workspace::mock()
-      .tiling_direction(axis)
-      .gaps_config(gaps_config.clone())
-      .layout(WorkspaceLayout::Scrolling)
-      .scroll(scroll_config)
-      .call();
-
-    let windows = (0..window_count)
-      .map(|_| {
-        TilingWindow::mock().gaps_config(gaps_config.clone()).call()
-      })
-      .collect::<Vec<_>>();
-
-    for window in &windows {
-      attach_container(
-        &window.clone().into(),
-        &workspace.clone().into(),
-        None,
-      )
-      .unwrap();
-    }
-
-    // `attach_container` resizes tiling children when they're inserted
-    // with siblings. Override the sizes that it assigns here.
-    for window in &windows {
-      window.set_tiling_size(window_fraction);
-    }
-
-    // Attach the workspace to a mock monitor (needed for rect math).
-    let _monitor =
-      Monitor::mock().workspaces(vec![workspace.clone()]).call();
-
-    (workspace, windows)
-  }
 
   fn window_rects(windows: &[TilingWindow]) -> Vec<Rect> {
     windows
@@ -229,7 +184,7 @@ mod tests {
 
   #[test]
   fn positions_horizontal_strip() {
-    let (workspace, windows) = scrolling_workspace(
+    let (workspace, windows) = mock_scrolling_workspace(
       TilingDirection::Horizontal,
       3,
       0.5,
@@ -256,7 +211,7 @@ mod tests {
 
   #[test]
   fn positions_vertical_strip() {
-    let (workspace, windows) = scrolling_workspace(
+    let (workspace, windows) = mock_scrolling_workspace(
       TilingDirection::Vertical,
       3,
       0.5,
@@ -286,7 +241,7 @@ mod tests {
       ..GapsConfig::default()
     };
 
-    let (workspace, windows) = scrolling_workspace(
+    let (workspace, windows) = mock_scrolling_workspace(
       TilingDirection::Horizontal,
       3,
       0.5,
@@ -305,7 +260,7 @@ mod tests {
 
   #[test]
   fn clamps_scroll_offset() {
-    let (workspace, _windows) = scrolling_workspace(
+    let (workspace, _windows) = mock_scrolling_workspace(
       TilingDirection::Horizontal,
       3,
       0.5,
@@ -327,7 +282,7 @@ mod tests {
 
   #[test]
   fn scrolls_focused_window_into_view() {
-    let (workspace, windows) = scrolling_workspace(
+    let (workspace, windows) = mock_scrolling_workspace(
       TilingDirection::Horizontal,
       3,
       0.5,
@@ -356,7 +311,7 @@ mod tests {
 
   #[test]
   fn centers_focused_window() {
-    let (workspace, windows) = scrolling_workspace(
+    let (workspace, windows) = mock_scrolling_workspace(
       TilingDirection::Horizontal,
       3,
       0.5,

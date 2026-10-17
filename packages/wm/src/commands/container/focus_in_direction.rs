@@ -166,3 +166,212 @@ fn workspace_focus_target(
 
   Ok(focus_target)
 }
+
+#[cfg(test)]
+mod tests {
+  use uuid::Uuid;
+  use wm_common::{GapsConfig, ScrollConfig, WorkspaceLayout};
+
+  use super::*;
+  use crate::{
+    commands::container::{attach_container, set_focused_descendant},
+    models::{SplitContainer, TilingWindow, Workspace},
+    test_utils::mock_scrolling_workspace,
+  };
+
+  /// Gets the ID of the focus target when moving in a direction from the
+  /// given container.
+  fn focus_target_id(
+    origin: &Container,
+    direction: &Direction,
+  ) -> Option<Uuid> {
+    tiling_focus_target(origin, direction)
+      .unwrap()
+      .map(|container| container.id())
+  }
+
+  #[test]
+  fn focuses_next_and_previous_strip_items() {
+    let (_workspace, windows) = mock_scrolling_workspace(
+      TilingDirection::Horizontal,
+      3,
+      0.5,
+      &GapsConfig::default(),
+      ScrollConfig::default(),
+    );
+
+    // Right/left move to the next/previous window in the strip.
+    assert_eq!(
+      focus_target_id(&windows[1].clone().into(), &Direction::Right),
+      Some(windows[2].id())
+    );
+    assert_eq!(
+      focus_target_id(&windows[1].clone().into(), &Direction::Left),
+      Some(windows[0].id())
+    );
+    assert_eq!(
+      focus_target_id(&windows[0].clone().into(), &Direction::Right),
+      Some(windows[1].id())
+    );
+  }
+
+  #[test]
+  fn follows_scroll_axis_of_workspace() {
+    let (_workspace, windows) = mock_scrolling_workspace(
+      TilingDirection::Vertical,
+      3,
+      0.5,
+      &GapsConfig::default(),
+      ScrollConfig::default(),
+    );
+
+    // Down/up move to the next/previous window in a vertical strip.
+    assert_eq!(
+      focus_target_id(&windows[1].clone().into(), &Direction::Down),
+      Some(windows[2].id())
+    );
+    assert_eq!(
+      focus_target_id(&windows[1].clone().into(), &Direction::Up),
+      Some(windows[0].id())
+    );
+  }
+
+  #[test]
+  fn ignores_cross_axis_directions() {
+    let (_workspace, windows) = mock_scrolling_workspace(
+      TilingDirection::Horizontal,
+      3,
+      0.5,
+      &GapsConfig::default(),
+      ScrollConfig::default(),
+    );
+
+    // Directions that don't match the scroll axis have no focus target
+    // within the strip. The caller falls back to focusing the workspace
+    // in that direction.
+    assert!(tiling_focus_target(
+      &windows[1].clone().into(),
+      &Direction::Up
+    )
+    .unwrap()
+    .is_none());
+    assert!(tiling_focus_target(
+      &windows[1].clone().into(),
+      &Direction::Down
+    )
+    .unwrap()
+    .is_none());
+
+    let (_workspace, windows) = mock_scrolling_workspace(
+      TilingDirection::Vertical,
+      3,
+      0.5,
+      &GapsConfig::default(),
+      ScrollConfig::default(),
+    );
+
+    assert!(tiling_focus_target(
+      &windows[1].clone().into(),
+      &Direction::Left
+    )
+    .unwrap()
+    .is_none());
+    assert!(tiling_focus_target(
+      &windows[1].clone().into(),
+      &Direction::Right
+    )
+    .unwrap()
+    .is_none());
+  }
+
+  #[test]
+  fn does_not_wrap_around_strip() {
+    let (_workspace, windows) = mock_scrolling_workspace(
+      TilingDirection::Horizontal,
+      3,
+      0.5,
+      &GapsConfig::default(),
+      ScrollConfig::default(),
+    );
+
+    // Moving left from the first window or right from the last window
+    // doesn't wrap around the strip. The caller falls back to focusing
+    // the workspace in that direction.
+    assert!(tiling_focus_target(
+      &windows[0].clone().into(),
+      &Direction::Left
+    )
+    .unwrap()
+    .is_none());
+    assert!(tiling_focus_target(
+      &windows[2].clone().into(),
+      &Direction::Right
+    )
+    .unwrap()
+    .is_none());
+  }
+
+  #[test]
+  fn navigates_within_and_across_split_columns() {
+    let workspace = Workspace::mock()
+      .tiling_direction(TilingDirection::Horizontal)
+      .layout(WorkspaceLayout::Scrolling)
+      .scroll(ScrollConfig::default())
+      .call();
+
+    let left = TilingWindow::mock().call();
+    let top = TilingWindow::mock().call();
+    let bottom = TilingWindow::mock().call();
+    let right = TilingWindow::mock().call();
+
+    // A vertical split (i.e. a stacked column) between two strip items.
+    let children: Vec<TilingContainer> =
+      vec![top.clone().into(), bottom.clone().into()];
+    let split = SplitContainer::mock()
+      .tiling_direction(TilingDirection::Vertical)
+      .tiling_containers(children)
+      .call();
+
+    attach_container(
+      &left.clone().into(),
+      &workspace.clone().into(),
+      None,
+    )
+    .unwrap();
+    attach_container(
+      &split.clone().into(),
+      &workspace.clone().into(),
+      None,
+    )
+    .unwrap();
+    attach_container(
+      &right.clone().into(),
+      &workspace.clone().into(),
+      None,
+    )
+    .unwrap();
+
+    // Vertical movement within the split is handled by the split itself.
+    assert_eq!(
+      focus_target_id(&top.clone().into(), &Direction::Down),
+      Some(bottom.id())
+    );
+
+    // Moving out of the split crosses to the next/previous strip item.
+    assert_eq!(
+      focus_target_id(&bottom.clone().into(), &Direction::Right),
+      Some(right.id())
+    );
+    assert_eq!(
+      focus_target_id(&left.clone().into(), &Direction::Right),
+      Some(top.id())
+    );
+
+    // Moving toward the split descends into its last-focused window.
+    set_focused_descendant(&bottom.clone().into(), None);
+    assert_eq!(
+      focus_target_id(&right.clone().into(), &Direction::Left),
+      Some(bottom.id())
+    );
+  }
+}

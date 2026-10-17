@@ -1,37 +1,46 @@
 use crate::{models::Container, traits::CommonGetters, wm_state::WmState};
 
-/// Updates the scroll offset of the focused container's workspace if the
-/// workspace uses the scrolling layout.
+/// Updates scroll offsets of displayed scrolling workspaces.
 ///
 /// If focus changed since the last sync, the focused container is
-/// scrolled into view. The offset is also clamped to the valid range to
-/// handle strip contents changing (e.g. a window being closed or moved
-/// to another workspace).
+/// scrolled into view. Offsets of all displayed scrolling workspaces are
+/// clamped to the valid range to handle strip contents changing (e.g. a
+/// window being closed or moved to another workspace).
 ///
-/// Queues a redraw of the workspace if the scroll offset changed.
+/// Queues a redraw of any workspace whose scroll offset changed.
 pub fn update_scroll_position(
   focused_container: &Container,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
-  let Some(workspace) = focused_container.workspace() else {
-    return Ok(());
-  };
+  let focused_workspace = focused_container.workspace();
 
-  if !workspace.is_scrolling() {
-    return Ok(());
-  }
+  let displayed_workspaces = state
+    .monitors()
+    .into_iter()
+    .filter_map(|monitor| monitor.displayed_workspace())
+    .collect::<Vec<_>>();
 
-  let mut offset_changed = false;
+  for workspace in displayed_workspaces {
+    if !workspace.is_scrolling() {
+      continue;
+    }
 
-  if state.pending_sync.needs_focus_update() {
-    offset_changed |=
-      workspace.ensure_descendant_visible(focused_container)?;
-  }
+    let mut offset_changed = false;
 
-  offset_changed |= workspace.clamp_scroll_offset()?;
+    let is_focused_workspace = focused_workspace
+      .as_ref()
+      .is_some_and(|focused| focused.id() == workspace.id());
 
-  if offset_changed {
-    state.pending_sync.queue_container_to_redraw(workspace);
+    if is_focused_workspace && state.pending_sync.needs_focus_update() {
+      offset_changed |=
+        workspace.ensure_descendant_visible(focused_container)?;
+    }
+
+    offset_changed |= workspace.clamp_scroll_offset()?;
+
+    if offset_changed {
+      state.pending_sync.queue_container_to_redraw(workspace);
+    }
   }
 
   Ok(())

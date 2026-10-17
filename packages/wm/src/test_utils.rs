@@ -49,6 +49,49 @@ pub fn mock_border_delta() -> RectDelta {
   RectDelta::zero()
 }
 
+/// Creates a scrolling workspace with equally-sized tiling windows,
+/// attached to a mock monitor.
+///
+/// Window sizes are set after insertion, since `attach_container`
+/// redistributes sizes between tiling siblings while inserting.
+pub fn mock_scrolling_workspace(
+  axis: TilingDirection,
+  window_count: usize,
+  window_fraction: f32,
+  gaps_config: &GapsConfig,
+  scroll_config: ScrollConfig,
+) -> (Workspace, Vec<TilingWindow>) {
+  let workspace = Workspace::mock()
+    .tiling_direction(axis)
+    .gaps_config(gaps_config.clone())
+    .layout(WorkspaceLayout::Scrolling)
+    .scroll(scroll_config)
+    .call();
+
+  let windows = (0..window_count)
+    .map(|_| TilingWindow::mock().gaps_config(gaps_config.clone()).call())
+    .collect::<Vec<_>>();
+
+  for window in &windows {
+    attach_container(
+      &window.clone().into(),
+      &workspace.clone().into(),
+      None,
+    )
+    .unwrap();
+  }
+
+  for window in &windows {
+    window.set_tiling_size(window_fraction);
+  }
+
+  // Attach the workspace to a mock monitor (needed for rect math).
+  let _monitor =
+    Monitor::mock().workspaces(vec![workspace.clone()]).call();
+
+  (workspace, windows)
+}
+
 #[bon]
 impl Monitor {
   #[builder]

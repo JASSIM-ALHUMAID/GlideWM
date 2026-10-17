@@ -1,6 +1,6 @@
 # Scrolling layout (Niri-style) — design & implementation plan
 
-Status: **in progress - P1 (config/model) and P2 (core geometry) implemented** · Branch: `feat/scrolling-layout` · Fork: `JASSIM-ALHUMAID/glazewm` (upstream: `glzr-io/glazewm`)
+Status: **in progress - P1–P3 implemented (config/model, core geometry, navigation & off-viewport sync)** · Branch: `feat/scrolling-layout` · Fork: `JASSIM-ALHUMAID/glazewm` (upstream: `glzr-io/glazewm`)
 
 This document organizes the work for adding a Niri/Hyprscroller-style **scrolling
 layout** to GlazeWM. It is the working plan for this branch: model, config
@@ -148,25 +148,32 @@ geometry-based (mirrors Niri):
   (wrap is a possible config follow-up).
 - Focus target inside a column (nested split): descend to the column's
   last-focused descendant; `up`/`down` within a column uses existing
-  direction logic first before crossing columns (phase 2, if kept).
+  direction logic first before crossing columns (verified in tests).
 - After focus lands: ensure-visible adjusts `scroll_offset`.
 
-Implementation: branching in
-`packages/wm/src/commands/container/focus_in_direction.rs`
-(`tiling_focus_target`) when the nearest workspace is `Layout::Scrolling`.
+Implementation: **no code change needed.** `tiling_focus_target` in
+`packages/wm/src/commands/container/focus_in_direction.rs` compares each
+ancestor's tiling direction against the pressed direction. Since a scrolling
+workspace's `tiling_direction` is its scroll axis (§2.1), the existing
+order-based sibling logic navigates the strip unmodified. Covered by tests in
+`focus_in_direction.rs` (strip edges, cross-axis, nested columns).
 
 ### 4.2 Ensure-visible (scroll on focus)
 
-New helper module, e.g. `packages/wm/src/commands/workspace/update_scroll_position.rs`:
+`packages/wm/src/commands/workspace/update_scroll_position.rs` (new):
 
 - `ensure_descendant_visible(workspace, container)`:
   - fully visible → no-op
   - `align: minimal` → scroll the least amount so the container is fully visible
   - `align: center` → center it
 - `clamp_scroll_position(workspace)`: enforce §2.3 invariants.
-- Wired into the sync pass (see `pending_sync.rs`): ensure-visible when
-  `needs_focus_update()`, clamp when containers were redrawn. Called from
-  `wm.rs` before `platform_sync` (keeps command handlers layout-agnostic).
+- Wired into `platform_sync` (`packages/wm/src/commands/general/platform_sync.rs`):
+  `update_scroll_position` runs after `sync_focus` and before redrawing
+  containers. It iterates the displayed workspace of every monitor: the
+  focused workspace is ensured-visible when `pending_sync.needs_focus_update()`
+  and every displayed scrolling workspace is clamped (covers strip changes
+  from closes/moves on non-focused workspaces). A changed offset queues a
+  redraw of the workspace.
 
 ### 4.3 Insert
 
@@ -256,12 +263,15 @@ Reference implementations studied:
 5. `focus_follows_cursor` (`handle_mouse_move.rs`): hit-test must use the
    viewport-clipped rect so cursors over a clamped/invisible overhang do not
    focus hidden windows.
-6. `jump_cursor`: clamp the target point into the viewport (rect centers of
-   off-viewport windows are off-screen).
+6. `jump_cursor`: no code change needed. Ensure-visible (§4.2) runs earlier in
+   `platform_sync` and scrolls the focused window fully into the viewport
+   before the cursor jump is processed, so the focused rect's center is
+   on-screen whenever the jump happens.
 
 Platform trait changes needed for v1: none beyond reusing cloak/hide/show —
-`reposition_window` computes the clamped position and visibility; the clamped
-position is applied in the same `SetWindowPos` call.
+`window_placement` computes the clamped rect and visibility; `reposition_window`
+applies both (the clamped rect via the same `SetWindowPos`/`set_frame` call a
+normal sync would use).
 
 
 ---
@@ -294,10 +304,11 @@ reviewable.
 
 | File | Change |
 | --- | --- |
-| `packages/wm/src/commands/container/focus_in_direction.rs` | order-based navigation branch |
-| `packages/wm/src/commands/general/platform_sync.rs` | clamp + cloak off-viewport windows (§5); cursor-jump clamp |
+| `packages/wm/src/commands/container/focus_in_direction.rs` | **no code change** — existing axis/sibling logic navigates strips (§4.1); tests added |
+| `packages/wm/src/commands/workspace/update_scroll_position.rs` | clamp all displayed scrolling workspaces; ensure-visible the focused one |
+| `packages/wm/src/commands/general/platform_sync.rs` | `ScrollingPlacement` clamp + cloak of off-viewport windows (§5) |
 | `packages/wm/src/events/handle_mouse_move.rs` | hit-test against viewport-clipped rect |
-| tests | focus order at strip edges, focus into/out of columns |
+| tests | focus at strip edges, cross-axis, focus into/out of columns; placement clamp math |
 
 ### P4 — mutation semantics
 
@@ -351,5 +362,4 @@ reviewable.
 7. **Columns (stacking)**: needs `move --direction up/down` column semantics
    (create/dissolve nested splits). Deferred; base strip ships first, and the
    data model already fits (nested `SplitContainer` as column).
-```
 

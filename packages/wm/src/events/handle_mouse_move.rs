@@ -1,11 +1,14 @@
 use anyhow::Context;
 #[cfg(target_os = "macos")]
 use wm_common::try_warn;
-use wm_platform::{MouseButton, MouseEvent};
+use wm_platform::{MouseButton, MouseEvent, Point};
 
 use crate::{
-  commands::container::set_focused_descendant, traits::CommonGetters,
-  user_config::UserConfig, wm_state::WmState,
+  commands::container::set_focused_descendant,
+  models::{WindowContainer, Workspace},
+  traits::{CommonGetters, PositionGetters},
+  user_config::UserConfig,
+  wm_state::WmState,
 };
 #[cfg(target_os = "macos")]
 use crate::{
@@ -97,6 +100,11 @@ pub fn handle_mouse_move(
       }
     };
 
+    // Ignore windows that are hidden due to being scrolled out of view
+    // in a scrolling workspace.
+    let window_under_cursor = window_under_cursor
+      .filter(|window| is_within_visible_rect(window, position));
+
     // Set focus to whichever window is currently under the cursor.
     if let Some(window) = window_under_cursor {
       let focused_container =
@@ -127,4 +135,35 @@ pub fn handle_mouse_move(
   }
 
   Ok(())
+}
+
+/// Whether the given point is within the part of the window that is
+/// visibly rendered.
+///
+/// Tiling windows of a scrolling workspace are hidden and clamped just
+/// beyond the viewport edge when they are scrolled out of view. Hit
+/// tests must ignore them, so that cursors over a hidden (clamped)
+/// window don't set focus to it.
+fn is_within_visible_rect(
+  window: &WindowContainer,
+  point: &Point,
+) -> bool {
+  // Only the part of a tiling window that is within its workspace's
+  // viewport is visible.
+  let is_in_viewport = match window {
+    WindowContainer::TilingWindow(_) => window
+      .workspace()
+      .filter(Workspace::is_scrolling)
+      .and_then(|workspace| workspace.to_rect().ok())
+      .is_none_or(|viewport_rect| viewport_rect.contains_point(point)),
+    WindowContainer::NonTilingWindow(_) => true,
+  };
+
+  if !is_in_viewport {
+    return false;
+  }
+
+  window
+    .to_rect()
+    .is_ok_and(|rect| rect.contains_point(point))
 }
