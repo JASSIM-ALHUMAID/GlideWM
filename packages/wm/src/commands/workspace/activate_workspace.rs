@@ -79,6 +79,9 @@ pub fn activate_workspace(
 }
 
 /// Gets config for the workspace to activate.
+///
+/// Runtime config changes made during this session take precedence over
+/// the config file (see [`WmState::set_workspace_config_override`]).
 fn workspace_config(
   workspace_name: Option<&str>,
   target_monitor: Option<Monitor>,
@@ -106,7 +109,64 @@ fn workspace_config(
         config.next_inactive_workspace_config(&state.workspaces())
       })
       .context("No workspace config available to activate workspace."),
-  };
+  }?;
 
-  found_config.cloned()
+  Ok(
+    state
+      .workspace_config_overrides
+      .get(&found_config.name)
+      .cloned()
+      .unwrap_or_else(|| found_config.clone()),
+  )
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_common::{ScrollConfig, WorkspaceLayout};
+
+  use super::*;
+
+  /// Creates a mock user config with a single scrolling workspace named
+  /// "1".
+  fn mock_config() -> UserConfig {
+    let mut config = UserConfig::mock();
+
+    config.value.workspaces = vec![WorkspaceConfig {
+      name: "1".to_string(),
+      display_name: None,
+      bind_to_monitor: None,
+      keep_alive: false,
+      layout: WorkspaceLayout::Scrolling,
+      scroll: ScrollConfig::default(),
+    }];
+
+    config
+  }
+
+  #[test]
+  fn uses_config_file_without_override() {
+    let mut state = WmState::mock();
+    let config = mock_config();
+
+    let found_config =
+      workspace_config(Some("1"), None, &mut state, &config).unwrap();
+
+    assert_eq!(found_config.layout, WorkspaceLayout::Scrolling);
+  }
+
+  #[test]
+  fn prefers_session_config_override() {
+    let mut state = WmState::mock();
+
+    let mut override_config = mock_config().value.workspaces[0].clone();
+    override_config.layout = WorkspaceLayout::Tiling;
+    state.set_workspace_config_override(override_config);
+
+    let config = mock_config();
+
+    let found_config =
+      workspace_config(Some("1"), None, &mut state, &config).unwrap();
+
+    assert_eq!(found_config.layout, WorkspaceLayout::Tiling);
+  }
 }

@@ -251,6 +251,8 @@ keybindings:
   # The layout can also be set directly, e.g.:
   #   `set-layout --layout scrolling`
   #   `set-layout --layout tiling --workspace 2`
+  # Runtime switches are kept for the session; set the workspace's
+  # `layout` in this config for a permanent choice.
   - commands: ['cycle-layout']
     bindings: ['alt+shift+v']
 

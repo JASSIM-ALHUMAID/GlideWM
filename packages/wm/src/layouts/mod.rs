@@ -479,9 +479,11 @@ pub fn window_placement(
 /// Adjusts a workspace's state after its layout was switched.
 ///
 /// The scrolling layout normalizes sizes and scroll position so that the
-/// focused container stays visible. Switching to the tiling layout keeps
-/// the existing sizes, which are reinterpreted as shares of the
-/// workspace (see the size semantics in `docs/scrolling-layout.md`).
+/// focused container stays visible. The tiling layout rescales the sizes
+/// of the workspace's children so that they fill the viewport; sizes set
+/// while the scrolling layout was active are viewport fractions that can
+/// sum to more than the full viewport (see the size semantics in
+/// `docs/scrolling-layout.md`).
 pub fn on_layout_changed(
   workspace: &Workspace,
   prev_layout: &WorkspaceLayout,
@@ -493,7 +495,10 @@ pub fn on_layout_changed(
   }
 
   match new_layout {
-    WorkspaceLayout::Tiling => Ok(()),
+    WorkspaceLayout::Tiling => {
+      tiling::normalize_sizes(workspace);
+      Ok(())
+    }
     WorkspaceLayout::Scrolling => scrolling::normalize(workspace, state),
   }
 }
@@ -501,29 +506,36 @@ pub fn on_layout_changed(
 /// Adjusts a workspace's state after its config was replaced on a config
 /// reload.
 ///
-/// The scroll axis from the config is applied as the workspace's tiling
-/// direction while the scrolling layout is active, and the workspace is
-/// normalized when its layout was just switched to scrolling, so that
-/// the switch behaves like the `set-layout` command.
+/// A layout switch behaves like the `set-layout` command
+/// ([`on_layout_changed`]). The scroll axis from the config is applied
+/// as the workspace's tiling direction while the scrolling layout is
+/// active.
 pub fn on_workspace_config_reloaded(
   workspace: &Workspace,
   prev_config: &WorkspaceConfig,
   new_config: &WorkspaceConfig,
   state: &WmState,
 ) -> anyhow::Result<()> {
-  match new_config.layout {
-    WorkspaceLayout::Tiling => Ok(()),
-    WorkspaceLayout::Scrolling => {
-      if prev_config.layout != new_config.layout {
-        workspace.set_tiling_direction(new_config.scroll.axis.clone());
-        scrolling::normalize(workspace, state)?;
-      } else if prev_config.scroll.axis != new_config.scroll.axis {
-        workspace.set_tiling_direction(new_config.scroll.axis.clone());
-      }
-
-      Ok(())
+  if prev_config.layout != new_config.layout {
+    if new_config.layout == WorkspaceLayout::Scrolling {
+      workspace.set_tiling_direction(new_config.scroll.axis.clone());
     }
+
+    return on_layout_changed(
+      workspace,
+      &prev_config.layout,
+      &new_config.layout,
+      state,
+    );
   }
+
+  if new_config.layout == WorkspaceLayout::Scrolling
+    && prev_config.scroll.axis != new_config.scroll.axis
+  {
+    workspace.set_tiling_direction(new_config.scroll.axis.clone());
+  }
+
+  Ok(())
 }
 
 #[cfg(test)]

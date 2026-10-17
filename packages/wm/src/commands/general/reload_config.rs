@@ -34,6 +34,10 @@ pub fn reload_config(
     run_window_rules(window, &WindowRuleEvent::Manage, state, config)?;
   }
 
+  // Runtime workspace config overrides are re-synced from the config
+  // file on reload.
+  state.workspace_config_overrides.clear();
+
   update_workspace_configs(state, config)?;
 
   update_container_gaps(state, config);
@@ -228,9 +232,10 @@ mod tests {
   };
 
   /// Creates a `UserConfig` that switches the given workspace to the
-  /// scrolling layout with the given scroll axis.
+  /// given layout (with the given scroll axis).
   fn config_for_workspace_layout(
     workspace: &Workspace,
+    layout: WorkspaceLayout,
     axis: TilingDirection,
   ) -> UserConfig {
     let mut config = UserConfig::mock();
@@ -240,7 +245,7 @@ mod tests {
       display_name: None,
       bind_to_monitor: None,
       keep_alive: false,
-      layout: WorkspaceLayout::Scrolling,
+      layout,
       scroll: ScrollConfig {
         axis,
         ..ScrollConfig::default()
@@ -285,8 +290,11 @@ mod tests {
     )
     .unwrap();
 
-    let config =
-      config_for_workspace_layout(&workspace, TilingDirection::Vertical);
+    let config = config_for_workspace_layout(
+      &workspace,
+      WorkspaceLayout::Scrolling,
+      TilingDirection::Vertical,
+    );
 
     update_workspace_configs(&mut state, &config).unwrap();
 
@@ -340,8 +348,11 @@ mod tests {
 
     set_focused_descendant(&second.clone().into(), None);
 
-    let config =
-      config_for_workspace_layout(&workspace, TilingDirection::Horizontal);
+    let config = config_for_workspace_layout(
+      &workspace,
+      WorkspaceLayout::Scrolling,
+      TilingDirection::Horizontal,
+    );
 
     update_workspace_configs(&mut state, &config).unwrap();
 
@@ -355,5 +366,56 @@ mod tests {
 
     assert!(item_rect.x() >= viewport_rect.x());
     assert!(item_rect.right <= viewport_rect.right);
+  }
+
+  #[test]
+  fn rescales_sizes_when_config_switches_to_tiling() {
+    let workspace =
+      Workspace::mock().layout(WorkspaceLayout::Scrolling).call();
+    let first = TilingWindow::mock().call();
+    let second = TilingWindow::mock().call();
+
+    attach_container(
+      &first.clone().into(),
+      &workspace.clone().into(),
+      None,
+    )
+    .unwrap();
+    attach_container(
+      &second.clone().into(),
+      &workspace.clone().into(),
+      None,
+    )
+    .unwrap();
+
+    // Viewport fractions that sum to more than the full viewport.
+    first.set_tiling_size(0.7);
+    second.set_tiling_size(0.7);
+
+    let monitor =
+      Monitor::mock().workspaces(vec![workspace.clone()]).call();
+
+    let mut state = WmState::mock();
+    attach_container(
+      &monitor.clone().into(),
+      &state.root_container.clone().into(),
+      None,
+    )
+    .unwrap();
+
+    let config = config_for_workspace_layout(
+      &workspace,
+      WorkspaceLayout::Tiling,
+      TilingDirection::Horizontal,
+    );
+
+    update_workspace_configs(&mut state, &config).unwrap();
+
+    assert_eq!(workspace.config().layout, WorkspaceLayout::Tiling);
+
+    // The fractions are rescaled into shares that fill the viewport.
+    for window in [&first, &second] {
+      assert!((window.tiling_size() - 0.5).abs() < f32::EPSILON);
+    }
   }
 }

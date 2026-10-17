@@ -1,10 +1,12 @@
-use std::time::Instant;
+use std::{collections::HashMap, time::Instant};
 
 use anyhow::Context;
 use tokio::sync::mpsc::{self};
 use tracing::warn;
 use uuid::Uuid;
-use wm_common::{BindingModeConfig, HideCorner, WindowState, WmEvent};
+use wm_common::{
+  BindingModeConfig, HideCorner, WindowState, WmEvent, WorkspaceConfig,
+};
 use wm_platform::{
   Direction, Dispatcher, Display, NativeWindow, Point, Rect,
 };
@@ -57,6 +59,15 @@ pub struct WmState {
   /// Configs of currently enabled binding modes.
   pub binding_modes: Vec<BindingModeConfig>,
 
+  /// Runtime overrides for workspace configs, keyed by workspace name.
+  ///
+  /// Workspace config changes made at runtime (e.g. via `set-layout` or
+  /// `update-workspace-config`) are kept for the rest of the session:
+  /// when the workspace is activated again (e.g. after being destroyed
+  /// while empty), the override replaces its config from the user's
+  /// config file. Config reload clears all overrides.
+  pub workspace_config_overrides: HashMap<String, WorkspaceConfig>,
+
   /// Windows that the WM should ignore. Windows can be added via the
   /// `ignore` command.
   pub ignored_windows: Vec<NativeWindow>,
@@ -91,6 +102,7 @@ impl WmState {
       recent_workspace_name: None,
       unmanaged_or_minimized_timestamp: None,
       binding_modes: Vec::new(),
+      workspace_config_overrides: HashMap::new(),
       ignored_windows: Vec::new(),
       is_paused: false,
       is_focus_synced: false,
@@ -98,6 +110,30 @@ impl WmState {
       event_tx,
       exit_tx,
     }
+  }
+
+  /// Stores a runtime override for the given workspace config.
+  ///
+  /// The override replaces the workspace's config from the user's config
+  /// file when the workspace is activated again during this session, so
+  /// that runtime changes (e.g. switching layouts) survive the workspace
+  /// being destroyed while it is empty. Config reload clears all
+  /// overrides.
+  pub fn set_workspace_config_override(
+    &mut self,
+    config: WorkspaceConfig,
+  ) {
+    self
+      .workspace_config_overrides
+      .insert(config.name.clone(), config);
+  }
+
+  /// Removes the runtime override for the given workspace name, if any.
+  ///
+  /// Used when a workspace is renamed, so that the override doesn't get
+  /// applied to a different workspace that uses the freed-up name.
+  pub fn remove_workspace_config_override(&mut self, name: &str) {
+    self.workspace_config_overrides.remove(name);
   }
 
   /// Populates the initial WM state by creating containers for all

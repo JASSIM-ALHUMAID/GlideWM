@@ -64,7 +64,7 @@ module.
 | `supports_scrolling` | Whether scroll behavior (e.g. the `scroll` command) applies | `false` | `true` |
 | `clips_children_to_viewport` | Whether hit tests must be limited to the viewport | `false` | `true` |
 | `window_placement` | Rect to position a window at + whether it is scrolled out | Natural rect | Clamped just beyond the viewport + `is_scrolled_out` |
-| `on_layout_changed` | State updates after a runtime layout switch | Nothing (sizes reinterpreted) | Normalize sizes/scroll position |
+| `on_layout_changed` | State updates after a runtime layout switch | Rescale sizes to fill the viewport | Normalize sizes/scroll position |
 | `on_workspace_config_reloaded` | State updates after a config reload changed a workspace | Nothing | Apply the config's axis; normalize on a layout switch |
 
 Notes:
@@ -92,12 +92,19 @@ Notes:
   `WorkspaceLayout::next()` (`InvokeCommand::CycleLayout`). The default
   keybinding is `alt+shift+v`.
 - Both funnel into `set_workspace_layout`, which updates the workspace
-  config, calls `layouts::on_layout_changed` (e.g. the scrolling layout
-  clamps sizes, resets the scroll offset and scrolls the focused window
-  into view), queues a redraw and emits `WorkspaceUpdated`.
+  config, records it as a session override, calls
+  `layouts::on_layout_changed` (the scrolling layout clamps sizes, resets
+  the scroll offset and scrolls the focused window into view; the tiling
+  layout rescales sizes so that the children fill the viewport), queues a
+  redraw and emits `WorkspaceUpdated`.
 - Config reloads go through `layouts::on_workspace_config_reloaded` so
   that a config that switches a workspace's layout behaves the same as
   `set-layout`.
+- Runtime switches last for the rest of the WM session
+  (`WmState::workspace_config_overrides`): an empty workspace that is
+  destroyed and later activated again comes back with its overridden
+  config. Config reload clears the overrides, so permanence comes from
+  the workspace's `layout` in the config file.
 
 Because the layout is part of the workspace config, no new event or DTO
 is needed for switching: `WorkspaceUpdated` / `WorkspaceDto` already

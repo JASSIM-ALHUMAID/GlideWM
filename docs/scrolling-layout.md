@@ -107,7 +107,9 @@ clipping is a platform concern (§5).
 
 Note: `tiling_size` changes semantics from "share of remaining space" to
 "fraction of viewport" only under `Layout::Scrolling`. Switching layouts
-reinterprets existing values; clamp/normalize on switch (see §4.5).
+normalizes existing values on the switch: sizes are clamped into the valid
+range when switching to scrolling, and rescaled into shares that fill the
+viewport when switching to tiling (see §4.6).
 
 Lone item rule (Niri's "a single column fills the workspace"): when the
 workspace has exactly one tiling child, its effective extent is the **full
@@ -274,7 +276,10 @@ workspace), or appends to the end of the strip when it has none.
   subject container's workspace. Switching to scrolling clamps the tiling
   sizes to `[MIN_TILING_SIZE, 1.0]` (they become viewport fractions), resets
   `scroll_offset` and scrolls the focused descendant into view; switching to
-  tiling keeps the sizes (reinterpreted as shares of the workspace).
+  tiling rescales the sizes proportionally into shares that fill the
+  viewport (viewport fractions can sum to more than 1, e.g. two windows at
+  `scroll.window_width: 0.7` sum to 1.4, which would leave the second window
+  past the right edge of the viewport).
   Emits `WorkspaceUpdated` — the layout is part of the workspace config, so
   the existing event already carries it (no new `WmEvent` variant needed).
   The normalization is shared with config reloads through the layout
@@ -282,7 +287,10 @@ workspace), or appends to the end of the strip when it has none.
   `layouts::on_workspace_config_reloaded`): switching a workspace to
   scrolling via its config applies the same clamp/reset/ensure-visible
   steps, and while a workspace is scrolling, a changed `scroll.axis` is
-  applied as its runtime axis.
+  applied as its runtime axis. The updated config is also kept as a
+  session override (`WmState::workspace_config_overrides`): an empty
+  workspace that is destroyed and later activated again comes back with
+  its overridden layout, and `wm-reload-config` clears the overrides.
 - `cycle-layout [--workspace <name>]` — `set_workspace_layout` with the
   next layout in `WorkspaceLayout::ALL` (`tiling → scrolling → tiling`).
   The default keybinding is `alt+shift+v`.
@@ -478,9 +486,11 @@ are pluggable (see `docs/layouts.md` for the architecture).
    strip children. Fine for typical counts (<20/workspace); measure.
 3. **`hide_method: place_in_corner`**: parked windows + scrolling recalculate
    frames — must not park partially visible windows.
-4. **`tiling_size` semantic overload** (§2.4): switching layouts mid-session
-   reinterprets sizes; normalize deterministically (clamp to `[0.05, 1.0]`,
-   keep fractions) — document.
+4. **`tiling_size` semantic overload** (§2.4): **resolved** — switching
+   to scrolling clamps sizes into `[MIN_TILING_SIZE, 1.0]`; switching to
+   tiling rescales them into shares that fill the viewport. Runtime
+   switches are kept as session overrides, so an empty workspace that is
+   destroyed and re-activated comes back with the switched layout.
 5. **DPI / monitor move**: `scroll_offset` is physical px; recompute/clamp on
    `handle_display_settings_changed`.
 6. **Upstream divergence**: keep changes additive & behind config so the

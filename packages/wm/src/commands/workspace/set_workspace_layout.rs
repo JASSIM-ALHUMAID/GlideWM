@@ -10,9 +10,14 @@ use crate::{
 /// [`layouts::on_layout_changed`] (e.g. switching to scrolling clamps
 /// sizes to the valid range of viewport fractions and resets the scroll
 /// offset so that the focused descendant stays visible). Switching back
-/// to tiling keeps the existing sizes, which are then reinterpreted as
+/// to tiling rescales the existing sizes so that the children fill the
+/// viewport; the sizes were viewport fractions, which are rescaled into
 /// shares of the workspace (see the size semantics in
 /// `docs/scrolling-layout.md`).
+///
+/// The updated config is recorded as a session override (see
+/// [`WmState::set_workspace_config_override`]), so that the switch
+/// survives the workspace being destroyed while empty.
 ///
 /// Queues a redraw of the workspace's children and emits a
 /// `WorkspaceUpdated` event, since the layout is part of the workspace
@@ -30,7 +35,8 @@ pub fn set_workspace_layout(
 
   let mut updated_config = workspace.config();
   updated_config.layout = layout.clone();
-  workspace.set_config(updated_config);
+  workspace.set_config(updated_config.clone());
+  state.set_workspace_config_override(updated_config);
 
   layouts::on_layout_changed(workspace, &prev_layout, layout, state)?;
 
@@ -161,11 +167,11 @@ mod tests {
   }
 
   #[test]
-  fn keeps_sizes_when_switching_to_tiling() {
+  fn rescales_sizes_when_switching_to_tiling() {
     let (workspace, windows) = mock_scrolling_workspace(
       TilingDirection::Horizontal,
       2,
-      0.5,
+      0.7,
       &GapsConfig::default(),
       ScrollConfig::default(),
     );
@@ -177,7 +183,9 @@ mod tests {
 
     assert_eq!(workspace.config().layout, WorkspaceLayout::Tiling);
 
-    // Sizes are reinterpreted as shares of the workspace, not changed.
+    // Viewport fractions that sum to more than the full viewport are
+    // rescaled into shares that fill it (0.7 and 0.7 become 0.5 and
+    // 0.5), so no window sits past the edge of the viewport.
     for window in &windows {
       assert!((window.tiling_size() - 0.5).abs() < f32::EPSILON);
     }
@@ -185,6 +193,29 @@ mod tests {
     // The scroll offset is left as-is; it is only meaningful while the
     // workspace uses the scrolling layout.
     assert_eq!(workspace.scroll_offset(), 0);
+  }
+
+  #[test]
+  fn records_session_config_override() {
+    let (workspace, _windows) = mock_scrolling_workspace(
+      TilingDirection::Horizontal,
+      1,
+      0.5,
+      &GapsConfig::default(),
+      ScrollConfig::default(),
+    );
+
+    let mut state = WmState::mock();
+
+    set_workspace_layout(&workspace, &WorkspaceLayout::Tiling, &mut state)
+      .unwrap();
+
+    // The updated config is kept as a session override, so that the
+    // switch survives the workspace being destroyed while empty.
+    let override_config =
+      state.workspace_config_overrides.get("1").unwrap();
+
+    assert_eq!(override_config.layout, WorkspaceLayout::Tiling);
   }
 
   #[test]

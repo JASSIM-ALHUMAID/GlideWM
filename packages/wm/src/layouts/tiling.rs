@@ -148,6 +148,31 @@ pub(super) fn redistribute_freed_space(
   }
 }
 
+/// Rescales the tiling sizes of the workspace's direct children so that
+/// they sum to the full viewport.
+///
+/// The tiling layout sizes children as shares of the space alongside
+/// their siblings, so the shares must sum to `1` for the children to
+/// fill the viewport. Sizes that were set while the scrolling layout
+/// was active are fractions of the viewport that can sum to more than
+/// `1` (e.g. two windows at the default `scroll.window_width` of `0.7`
+/// sum to `1.4`). Rescaling keeps the relative sizes of the children.
+pub(super) fn normalize_sizes(workspace: &Workspace) {
+  let children = workspace.tiling_children().collect::<Vec<_>>();
+
+  let total_size = children
+    .iter()
+    .fold(0., |sum, child| sum + child.tiling_size());
+
+  if total_size <= 0. {
+    return;
+  }
+
+  for child in children {
+    child.set_tiling_size(child.tiling_size() / total_size);
+  }
+}
+
 /// Resizes a tiling container so that its tiling size becomes the given
 /// target size.
 ///
