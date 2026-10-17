@@ -580,6 +580,19 @@ impl WindowManager {
 
         set_workspace_layout(&workspace, layout, state)
       }
+      InvokeCommand::CycleLayout { workspace } => {
+        let workspace = if let Some(workspace_name) = workspace {
+          state
+            .workspace_by_name(workspace_name)
+            .context("Workspace doesn't exist.")?
+        } else {
+          subject_container.workspace().context("No workspace.")?
+        };
+
+        let new_layout = workspace.config().layout.next();
+
+        set_workspace_layout(&workspace, &new_layout, state)
+      }
       InvokeCommand::SetMinimized => {
         match subject_container.as_window_container() {
           Ok(window) => {

@@ -437,6 +437,26 @@ impl FromStr for WorkspaceLayout {
   }
 }
 
+impl WorkspaceLayout {
+  /// All workspace layouts, in the order that the `cycle-layout`
+  /// command cycles through them.
+  ///
+  /// Keep in sync with [`WorkspaceLayout::next`].
+  pub const ALL: [Self; 2] = [Self::Tiling, Self::Scrolling];
+
+  /// The next layout in the cycle, wrapping around at the end.
+  ///
+  /// The exhaustive match flags newly added layouts; new layouts must
+  /// also be added to [`WorkspaceLayout::ALL`].
+  #[must_use]
+  pub fn next(&self) -> Self {
+    match self {
+      Self::Tiling => Self::Scrolling,
+      Self::Scrolling => Self::Tiling,
+    }
+  }
+}
+
 /// Options for the scrolling layout.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
@@ -573,5 +593,24 @@ where
   #[cfg(not(target_os = "macos"))]
   {
     Ok(method)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// The cycle order in [`WorkspaceLayout::ALL`] must match what
+  /// repeatedly calling [`WorkspaceLayout::next`] produces.
+  #[test]
+  fn cycle_order_matches_all_layouts() {
+    let cycle =
+      std::iter::successors(Some(WorkspaceLayout::default()), |layout| {
+        let next = layout.next();
+        (next != WorkspaceLayout::default()).then_some(next)
+      })
+      .collect::<Vec<_>>();
+
+    assert_eq!(cycle, WorkspaceLayout::ALL);
   }
 }

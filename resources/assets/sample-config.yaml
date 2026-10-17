@@ -247,6 +247,13 @@ keybindings:
   - commands: ['toggle-tiling-direction']
     bindings: ['alt+v']
 
+  # Cycle the layout used by the focused workspace (tiling -> scrolling).
+  # The layout can also be set directly, e.g.:
+  #   `set-layout --layout scrolling`
+  #   `set-layout --layout tiling --workspace 2`
+  - commands: ['cycle-layout']
+    bindings: ['alt+shift+v']
+
   # Change focus from tiling windows -> floating -> fullscreen.
   - commands: ['wm-cycle-focus']
     bindings: ['alt+space']

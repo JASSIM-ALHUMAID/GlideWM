@@ -157,6 +157,12 @@ pub enum SubscribableEvent {
 pub enum InvokeCommand {
   AdjustBorders(InvokeAdjustBordersCommand),
   Close,
+  /// Cycles the layout used by a workspace (defaults to the focused
+  /// workspace). See `WorkspaceLayout::ALL` for the cycle order.
+  CycleLayout {
+    #[clap(long, allow_hyphen_values = true)]
+    workspace: Option<String>,
+  },
   Focus(InvokeFocusCommand),
   Ignore,
   Move(InvokeMoveCommand),
@@ -476,6 +482,21 @@ mod tests {
       InvokeCommand::SetLayout {
         workspace: Some("2".to_string()),
         layout: WorkspaceLayout::Tiling,
+      }
+    );
+  }
+
+  #[test]
+  fn parses_cycle_layout_command() {
+    assert_eq!(
+      parse_command("cycle-layout"),
+      InvokeCommand::CycleLayout { workspace: None }
+    );
+
+    assert_eq!(
+      parse_command("cycle-layout --workspace 2"),
+      InvokeCommand::CycleLayout {
+        workspace: Some("2".to_string()),
       }
     );
   }
