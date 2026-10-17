@@ -12,6 +12,7 @@ use wm_common::{
 use wm_platform::{Dispatcher, Display, NativeWindow, Rect, RectDelta};
 
 use crate::{
+  animation::Animations,
   commands::container::attach_container,
   models::{
     Monitor, NativeMonitorProperties, NativeWindowProperties,
@@ -322,6 +323,6 @@ impl WmState {
     let (event_tx, _) = mpsc::unbounded_channel();
     let (exit_tx, _) = mpsc::unbounded_channel();
 
-    Self::new(Dispatcher::mock(), event_tx, exit_tx)
+    Self::new(Dispatcher::mock(), event_tx, exit_tx, Animations::disabled())
   }
 }

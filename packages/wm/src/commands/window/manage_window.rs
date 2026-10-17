@@ -57,6 +57,10 @@ pub fn manage_window(
   if let Some(window) = updated_window {
     info!("New window managed: {window}");
 
+    // Mark the window so that it's animated when it's first shown (if
+    // window open animations are enabled).
+    state.animations.mark_pending_open(window.id());
+
     state.emit_event(WmEvent::WindowManaged {
       managed_window: window.to_dto()?,
     });

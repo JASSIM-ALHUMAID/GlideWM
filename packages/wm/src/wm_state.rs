@@ -14,6 +14,7 @@ use wm_platform::{
 use wm_platform::{NativeWindowWindowsExt, OpacityValue};
 
 use crate::{
+  animation::Animations,
   commands::{
     container::set_focused_descendant,
     general::platform_sync,
@@ -37,6 +38,9 @@ pub struct WmState {
   pub dispatcher: Dispatcher,
 
   pub pending_sync: PendingSync,
+
+  /// Animation state for animating window positions.
+  pub animations: Animations,
 
   /// Name of the most recently focused workspace.
   ///
@@ -93,11 +97,13 @@ impl WmState {
     dispatcher: Dispatcher,
     event_tx: mpsc::UnboundedSender<WmEvent>,
     exit_tx: mpsc::UnboundedSender<()>,
+    animations: Animations,
   ) -> Self {
     Self {
       root_container: RootContainer::new(),
       dispatcher,
       pending_sync: PendingSync::default(),
+      animations,
       prev_effects_window: None,
       recent_workspace_name: None,
       unmanaged_or_minimized_timestamp: None,

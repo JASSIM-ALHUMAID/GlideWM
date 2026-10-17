@@ -15,6 +15,7 @@ use wm_platform::{
 };
 
 use crate::{
+  animation::{AnimationCompletion, Animations},
   commands::{
     container::{
       focus_container_by_id, focus_in_direction, set_tiling_direction,
@@ -52,6 +53,7 @@ use crate::{
 pub struct WindowManager {
   pub event_rx: mpsc::UnboundedReceiver<WmEvent>,
   pub exit_rx: mpsc::UnboundedReceiver<()>,
+  pub animation_rx: mpsc::UnboundedReceiver<AnimationCompletion>,
   pub state: WmState,
 }
 
@@ -62,15 +64,45 @@ impl WindowManager {
   ) -> anyhow::Result<Self> {
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (exit_tx, exit_rx) = mpsc::unbounded_channel();
+    let (animations, animation_rx) = Animations::new();
 
-    let mut state = WmState::new(dispatcher, event_tx, exit_tx);
+    let mut state =
+      WmState::new(dispatcher, event_tx, exit_tx, animations);
     state.populate(config)?;
 
     Ok(Self {
       event_rx,
       exit_rx,
+      animation_rx,
       state,
     })
+  }
+
+  /// Applies a completion from the animation worker.
+  ///
+  /// Windows that slid out are redrawn, so that the regular redraw pass
+  /// applies their final position and hides them.
+  pub fn process_animation_completion(
+    &mut self,
+    completion: AnimationCompletion,
+    config: &mut UserConfig,
+  ) -> anyhow::Result<()> {
+    let state = &mut self.state;
+
+    if let Some(window_id) = state.animations.complete(&completion) {
+      if let Some(window) = state
+        .container_by_id(window_id)
+        .and_then(|container| container.as_window_container().ok())
+      {
+        state.pending_sync.queue_container_to_redraw(window);
+      }
+    }
+
+    if state.pending_sync.has_changes() {
+      platform_sync(state, config)?;
+    }
+
+    Ok(())
   }
 
   pub fn process_event(

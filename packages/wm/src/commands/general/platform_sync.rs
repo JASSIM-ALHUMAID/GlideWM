@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+
 use anyhow::Context;
+use uuid::Uuid;
 #[cfg(target_os = "windows")]
 use wm_common::WindowEffectConfig;
 use wm_common::{
@@ -12,6 +15,7 @@ use wm_platform::{CornerStyle, OpacityValue};
 use wm_platform::{Rect, WindowZOrder};
 
 use crate::{
+  animation::{WindowAnimation, WorkspaceSwitch},
   commands::workspace::update_scroll_position,
   layouts,
   models::{Container, WindowContainer},
@@ -35,10 +39,15 @@ pub fn platform_sync(
   // scrolling layout) prior to redrawing containers.
   update_scroll_position(&focused_container, state)?;
 
+  // Detect switches of the displayed workspace before redrawing, so
+  // that windows can be animated accordingly.
+  let monitors = state.monitors();
+  let switches = state.animations.detect_switches(&monitors);
+
   if !state.pending_sync.containers_to_redraw().is_empty()
     || !state.pending_sync.workspaces_to_reorder().is_empty()
   {
-    redraw_containers(&focused_container, state, config)?;
+    redraw_containers(&focused_container, state, config, &switches)?;
   }
 
   if state.pending_sync.needs_cursor_jump()
@@ -180,6 +189,7 @@ fn redraw_containers(
   focused_container: &Container,
   state: &mut WmState,
   config: &UserConfig,
+  switches: &HashMap<Uuid, WorkspaceSwitch>,
 ) -> anyhow::Result<()> {
   let windows_to_redraw = state.windows_to_redraw();
   let windows_to_bring_to_front =
@@ -288,8 +298,10 @@ fn redraw_containers(
     // layout itself, so they transition to `Hiding` here; otherwise
     // `handle_window_hidden` would treat the hide as externally
     // initiated and unmanage the window.
+    let previous_display_state = window.display_state();
+
     window.set_display_state(transition_display_state(
-      window.display_state(),
+      previous_display_state.clone(),
       workspace.is_displayed(),
       placement.is_scrolled_out,
     ));
@@ -299,7 +311,44 @@ fn redraw_containers(
       DisplayState::Showing | DisplayState::Shown
     ) && !placement.is_scrolled_out;
 
-    if let Err(err) = reposition_window(
+    // Animate the window if it's entering or leaving the displayed
+    // workspace of its monitor, or if it's being shown for the first
+    // time. Animated windows are positioned by the animation worker
+    // instead of `reposition_window`.
+    let animation = state
+      .animations
+      .plan_switch_animation(
+        window,
+        &previous_display_state,
+        switches,
+        &placement,
+        config,
+      )
+      .or_else(|| {
+        state.animations.plan_window_open(
+          window,
+          &previous_display_state,
+          &placement,
+          config,
+        )
+      });
+
+    if animation.is_none() {
+      state.animations.cancel(window);
+    }
+
+    if let Some(animation) = &animation {
+      #[cfg(target_os = "windows")]
+      if let Err(err) =
+        apply_window_animation(window, animation, &z_order, config)
+      {
+        tracing::warn!("Failed to apply window animation: {}", err);
+      }
+
+      // The animation is a no-op on platforms that don't support it.
+      #[cfg(not(target_os = "windows"))]
+      let _ = animation;
+    } else if let Err(err) = reposition_window(
       window,
       placement,
       *hide_corner,
@@ -511,6 +560,45 @@ fn reposition_window(
       } else {
         window.native().hide()?;
       }
+    }
+  }
+
+  Ok(())
+}
+
+/// Applies the initial visuals for an animated window: positions it at
+/// the animation's start frame and makes it visible.
+///
+/// Windows that are sliding out aren't repositioned here — the animation
+/// worker captures their current frame as the start of the animation and
+/// the final position/hide is applied once the animation completes.
+#[cfg(target_os = "windows")]
+fn apply_window_animation(
+  window: &WindowContainer,
+  animation: &WindowAnimation,
+  z_order: &WindowZOrder,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
+  use wm_platform::{
+    SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS,
+    SWP_NOSENDCHANGING,
+  };
+
+  if let WindowAnimation::SlideIn { start_rect } = animation {
+    let swp_flags = SWP_NOACTIVATE
+      | SWP_NOCOPYBITS
+      | SWP_NOSENDCHANGING
+      | SWP_ASYNCWINDOWPOS
+      | SWP_FRAMECHANGED;
+
+    window.native().set_window_pos(z_order, start_rect, swp_flags)?;
+
+    // Make the window visible before the animation starts. Windows are
+    // normally made visible by `reposition_window`.
+    if config.value.general.hide_method == HideMethod::Cloak {
+      window.native().set_cloaked(false)?;
+    } else {
+      window.native().show()?;
     }
   }
 

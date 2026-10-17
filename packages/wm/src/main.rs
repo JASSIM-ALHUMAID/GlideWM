@@ -34,6 +34,7 @@ use crate::{
   wm::WindowManager,
 };
 
+mod animation;
 mod commands;
 mod events;
 mod ipc_server;
@@ -214,6 +215,10 @@ async fn start_wm(
       Some(event) = keybinding_listener.next_event() => {
         tracing::debug!("Received keyboard event: {:?}", event);
         wm.process_event(PlatformEvent::Keybinding(event), &mut config)
+      },
+      Some(completion) = wm.animation_rx.recv() => {
+        tracing::debug!("Received animation completion: {:?}", completion);
+        wm.process_animation_completion(completion, &mut config)
       }
       _ = cleanup_interval.tick() => {
         if wm.state.is_paused {
