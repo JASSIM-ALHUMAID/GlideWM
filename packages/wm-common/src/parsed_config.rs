@@ -99,6 +99,9 @@ pub struct GeneralConfig {
 
   /// Affects which windows get shown in the native Windows taskbar.
   pub show_all_in_taskbar: bool,
+
+  /// Config for animating window positions.
+  pub animations: AnimationsConfig,
 }
 
 impl Default for GeneralConfig {
@@ -121,7 +124,173 @@ impl Default for GeneralConfig {
         }
       },
       show_all_in_taskbar: false,
+      animations: AnimationsConfig::default(),
     }
+  }
+}
+
+/// Config for animating window positions.
+///
+/// Animations are disabled by default. Window minimize/restore/close
+/// animations aren't handled by `GlazeWM` — use a tool such as
+/// Windhawk for those.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct AnimationsConfig {
+  /// Whether window animations are enabled.
+  pub enabled: bool,
+
+  /// Animation when the displayed workspace on a monitor changes.
+  pub workspace_switch: WorkspaceSwitchAnimationConfig,
+
+  /// Animation when a window is first shown (e.g. an application that's
+  /// launched).
+  pub window_open: WindowOpenAnimationConfig,
+}
+
+/// Config for the workspace switch animation.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct WorkspaceSwitchAnimationConfig {
+  /// Style of the animation.
+  pub style: WorkspaceSwitchAnimationStyle,
+
+  /// Edge that the incoming workspace slides in from.
+  pub direction: AnimationDirection,
+
+  /// How long the animation lasts, in milliseconds.
+  pub duration_ms: u32,
+
+  /// Easing curve as `[x1, y1, x2, y2]` cubic-bezier control points.
+  pub curve: AnimationCurve,
+}
+
+impl Default for WorkspaceSwitchAnimationConfig {
+  fn default() -> Self {
+    Self {
+      style: WorkspaceSwitchAnimationStyle::Slide,
+      direction: AnimationDirection::Auto,
+      duration_ms: 250,
+      curve: AnimationCurve::default(),
+    }
+  }
+}
+
+/// Style of the workspace switch animation.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceSwitchAnimationStyle {
+  /// No animation.
+  None,
+
+  /// Windows slide horizontally: the outgoing workspace slides out of
+  /// one monitor edge while the incoming workspace slides in from the
+  /// opposite edge.
+  #[default]
+  Slide,
+
+  /// Same as `slide`, but vertically.
+  SlideVert,
+}
+
+/// Config for the window open animation.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct WindowOpenAnimationConfig {
+  /// Style of the animation.
+  pub style: WindowOpenAnimationStyle,
+
+  /// How long the animation lasts, in milliseconds.
+  pub duration_ms: u32,
+
+  /// Easing curve as `[x1, y1, x2, y2]` cubic-bezier control points.
+  pub curve: AnimationCurve,
+}
+
+impl Default for WindowOpenAnimationConfig {
+  fn default() -> Self {
+    Self {
+      style: WindowOpenAnimationStyle::Slide,
+      duration_ms: 200,
+      curve: AnimationCurve::default(),
+    }
+  }
+}
+
+/// Style of the window open animation.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowOpenAnimationStyle {
+  /// No animation.
+  None,
+
+  /// Window slides in from the right edge of its monitor.
+  #[default]
+  Slide,
+}
+
+/// Edge that a workspace slides in from.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnimationDirection {
+  /// Direction is derived from the workspace switch (e.g. focusing the
+  /// next workspace slides in from the right).
+  #[default]
+  Auto,
+
+  Left,
+
+  Right,
+
+  Up,
+
+  Down,
+}
+
+/// Cubic bezier easing curve with control points `(x1, y1)` and
+/// `(x2, y2)`.
+///
+/// Serialized as an array of four numbers: `[x1, y1, x2, y2]`. The start
+/// `(0, 0)` and end `(1, 1)` points are implicit. `y` values outside
+/// `0..=1` are allowed to overshoot the animation's target.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(try_from = "[f64; 4]", into = "[f64; 4]")]
+pub struct AnimationCurve {
+  pub x1: f64,
+  pub y1: f64,
+  pub x2: f64,
+  pub y2: f64,
+}
+
+impl Default for AnimationCurve {
+  fn default() -> Self {
+    Self {
+      x1: 0.05,
+      y1: 0.9,
+      x2: 0.1,
+      y2: 1.05,
+    }
+  }
+}
+
+impl TryFrom<[f64; 4]> for AnimationCurve {
+  type Error = anyhow::Error;
+
+  fn try_from([x1, y1, x2, y2]: [f64; 4]) -> Result<Self, Self::Error> {
+    if !(0.0..=1.0).contains(&x1) || !(0.0..=1.0).contains(&x2) {
+      anyhow::bail!(
+        "Cubic bezier x coordinates must be within [0, 1], got \
+         '[{x1}, {y1}, {x2}, {y2}]'."
+      );
+    }
+
+    Ok(Self { x1, y1, x2, y2 })
+  }
+}
+
+impl From<AnimationCurve> for [f64; 4] {
+  fn from(curve: AnimationCurve) -> Self {
+    [curve.x1, curve.y1, curve.x2, curve.y2]
   }
 }
 
