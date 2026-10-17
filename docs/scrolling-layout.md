@@ -1,6 +1,6 @@
 # Scrolling layout (Niri-style) — design & implementation plan
 
-Status: **in progress - P1–P5 implemented (config/model, core geometry, navigation & off-viewport sync, mutation semantics, commands & IPC)** · Branch: `feat/scrolling-layout` · Fork: `JASSIM-ALHUMAID/glazewm` (upstream: `glzr-io/glazewm`)
+Status: **v1 implemented - P1–P5 complete (config/model, core geometry, navigation & off-viewport sync, mutation semantics, commands & IPC); P6 (region clipping) deferred** · Branch: `feat/scrolling-layout` · Fork: `JASSIM-ALHUMAID/glazewm` (upstream: `glzr-io/glazewm`)
 
 This document organizes the work for adding a Niri/Hyprscroller-style **scrolling
 layout** to GlazeWM. It is the working plan for this branch: model, config
