@@ -344,7 +344,10 @@ impl Animations {
     let animation_config = &config.value.general.animations.window_open;
 
     let will_slide_in = self.is_available(config)
-      && window.state() != WindowState::Minimized
+      && !matches!(
+        window.state(),
+        WindowState::Minimized | WindowState::Fullscreen(_)
+      )
       && animation_config.style != WindowOpenAnimationStyle::None
       && animation_config.duration_ms > 0;
 
@@ -642,6 +645,14 @@ impl Animations {
       return Some("window open animation duration is zero");
     }
 
+    // Apps are allowed to ignore position updates while fullscreen, so
+    // the window could sit parked off-screen (and cloaked) until the
+    // park times out. Fullscreen windows are left to the switch
+    // animation instead.
+    if matches!(window.state(), WindowState::Fullscreen(_)) {
+      return Some("fullscreen windows aren't animated on open");
+    }
+
     // New windows start in the `Shown` display state (the OS window
     // already exists by the time it's managed), so the check is on
     // whether the window will be visible after this pass.
@@ -695,8 +706,11 @@ impl Animations {
 
     // A window that's still waiting for its open slide loses its cloak
     // when any other animation takes over: the reveal is only requested
-    // by the in-flight open slide, which was just replaced.
+    // by the in-flight open slide, which was just replaced. The pending
+    // open flag is dropped too, so that a later redraw pass doesn't
+    // start a second open slide for the same window.
     if kind != AnimationKind::WindowOpen {
+      self.pending_open.remove(&window_id);
       self.lift_window_cloak(window);
     }
 
@@ -764,6 +778,13 @@ impl Animations {
     if !self.is_available(config)
       || !Self::is_animatable_window(window, placement)
     {
+      return false;
+    }
+
+    // A window that's transitioning to fullscreen is handed back to the
+    // regular redraw pass too: fullscreen windows aren't animated on
+    // open (see `open_slide_skip_reason`).
+    if matches!(window.state(), WindowState::Fullscreen(_)) {
       return false;
     }
 

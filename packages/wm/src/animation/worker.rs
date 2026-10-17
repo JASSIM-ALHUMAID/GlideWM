@@ -24,8 +24,10 @@ use super::{bezier::CubicBezier, AnimationUpdate};
 ///
 /// A window that's starting up can take a long time to process position
 /// updates (the app's thread is busy initializing), and the window is
-/// cloaked while it waits, so the timeout is generous.
-const PARK_CONFIRM_TIMEOUT: Duration = Duration::from_millis(1000);
+/// cloaked while it waits. Park frames land up to ~400ms after they're
+/// posted on slow-starting apps, so the timeout is set above that:
+/// giving up sooner would reveal the window before it's off-screen.
+const PARK_CONFIRM_TIMEOUT: Duration = Duration::from_millis(600);
 
 /// How long the worker waits for the main thread to confirm that a
 /// parked window was revealed before starting the slide without
@@ -263,13 +265,9 @@ fn apply_command(
         request.duration
       );
 
-      // Position the window at the start frame. For open slides this is
-      // the park frame, which the window is visible at until the app's
-      // thread processes the first position update.
-      if matches!(phase, Phase::Preparing { .. }) {
-        apply_frame(request.handle, &from);
-      }
-
+      // The window is parked at the start frame by the main thread when
+      // the animation is applied (`apply_window_animation`); the worker
+      // only waits for the park frame to land (`Phase::Preparing`).
       animations.push(ActiveAnimation {
         window_id: request.window_id,
         sequence: request.sequence,
@@ -327,7 +325,7 @@ impl ActiveAnimation {
             return true;
           }
 
-          tracing::debug!(
+          tracing::warn!(
             "Window was not parked in time to start its slide: {}",
             self.window_id
           );
@@ -353,7 +351,7 @@ impl ActiveAnimation {
           return true;
         }
 
-        tracing::debug!(
+        tracing::warn!(
           "Window reveal was not confirmed in time to start its slide: {}",
           self.window_id
         );
