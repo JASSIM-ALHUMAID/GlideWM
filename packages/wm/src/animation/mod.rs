@@ -474,11 +474,23 @@ impl Animations {
 
     let monitor = window.monitor()?;
 
-    // The window slides in from the right edge of its monitor.
-    let slide_edge = SlideEdge::Right;
+    // `slide` parks the window beyond the right edge of the monitor
+    // and `slide_vert` below the bottom edge so that it rises into
+    // place. The window is parked a margin beyond the edge, so that
+    // it's fully off-screen at the start of the slide. (`none` was
+    // filtered out above, in `open_slide_skip_reason`.)
+    let slide_edge = match animation_config.style {
+      WindowOpenAnimationStyle::SlideVert => SlideEdge::Bottom,
+      WindowOpenAnimationStyle::Slide
+      | WindowOpenAnimationStyle::None => SlideEdge::Right,
+    };
 
-    let slide_distance =
-      monitor.native_properties().bounds.width() + SLIDE_MARGIN_PX;
+    let monitor_bounds = monitor.native_properties().bounds;
+
+    let slide_distance = match slide_edge {
+      SlideEdge::Left | SlideEdge::Right => monitor_bounds.width(),
+      SlideEdge::Top | SlideEdge::Bottom => monitor_bounds.height(),
+    } + SLIDE_MARGIN_PX;
 
     let start_rect = placement
       .rect

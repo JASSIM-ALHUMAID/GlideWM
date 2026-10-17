@@ -233,6 +233,13 @@ pub enum WindowOpenAnimationStyle {
   /// Window slides in from the right edge of its monitor.
   #[default]
   Slide,
+
+  /// Window slides in from the bottom edge of its monitor.
+  ///
+  /// Hyprland spells this style `slidevert`; that spelling is accepted
+  /// as an alias.
+  #[serde(alias = "slidevert")]
+  SlideVert,
 }
 
 /// Where a workspace slides in from. `left`/`right` name the side the

@@ -79,6 +79,8 @@ general:
     window_open:
       # - 'none': No animation.
       # - 'slide': Window slides in from the right edge of the monitor.
+      # - 'slide_vert': Window slides in from the bottom edge of the
+      #   monitor.
       style: 'slide'
 
       # How long the animation lasts, in milliseconds.
