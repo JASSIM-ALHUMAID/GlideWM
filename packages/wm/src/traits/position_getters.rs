@@ -47,7 +47,7 @@ pub fn scrolling_child_rect(
     .map(|sibling| sibling.scrolling_extent(viewport_extent) + inner_gap)
     .sum::<i32>();
 
-  let along_extent = child.scrolling_extent(viewport_extent);
+  let along_extent = workspace.strip_item_extent(child, viewport_extent);
   let along_start = match scroll_axis {
     TilingDirection::Horizontal => parent_rect.x(),
     TilingDirection::Vertical => parent_rect.y(),
@@ -170,7 +170,7 @@ mod tests {
 
   use super::*;
   use crate::{
-    commands::container::attach_container,
+    commands::container::{attach_container, detach_container},
     models::{Monitor, TilingWindow},
     test_utils::mock_scrolling_workspace,
   };
@@ -348,5 +348,57 @@ mod tests {
 
     assert!(!workspace.ensure_descendant_visible(&window.into()).unwrap());
     assert!(!workspace.clamp_scroll_offset().unwrap());
+  }
+
+  #[test]
+  fn expands_lone_strip_item_to_fill_viewport() {
+    let (workspace, windows) = mock_scrolling_workspace(
+      TilingDirection::Horizontal,
+      1,
+      0.5,
+      &GapsConfig::default(),
+      ScrollConfig::default(),
+    );
+
+    // A lone strip item ignores its stored fraction and fills the
+    // viewport, like a single column in Niri.
+    let rect = windows[0].to_rect().unwrap();
+    assert_eq!(rect.x(), 0);
+    assert_eq!(rect.width(), 1680);
+    assert_eq!(workspace.strip_extent().unwrap(), 1680);
+    assert_eq!(workspace.max_scroll_offset().unwrap(), 0);
+  }
+
+  #[test]
+  fn uses_stored_fraction_with_multiple_strip_items() {
+    let (workspace, windows) = mock_scrolling_workspace(
+      TilingDirection::Horizontal,
+      2,
+      0.5,
+      &GapsConfig::default(),
+      ScrollConfig::default(),
+    );
+
+    let rects = window_rects(&windows);
+    assert_eq!(rects[0].width(), 840);
+    assert_eq!(rects[1].x(), 840);
+    assert_eq!(workspace.strip_extent().unwrap(), 1680);
+  }
+
+  #[test]
+  fn reexpands_when_returning_to_single_strip_item() {
+    let (workspace, windows) = mock_scrolling_workspace(
+      TilingDirection::Horizontal,
+      2,
+      0.5,
+      &GapsConfig::default(),
+      ScrollConfig::default(),
+    );
+
+    detach_container(windows[1].clone().into()).unwrap();
+
+    let rect = windows[0].to_rect().unwrap();
+    assert_eq!(rect.width(), 1680);
+    assert_eq!(workspace.strip_extent().unwrap(), 1680);
   }
 }

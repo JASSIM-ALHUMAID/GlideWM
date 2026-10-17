@@ -128,6 +128,23 @@ impl Workspace {
     })
   }
 
+  /// Extent of a single strip item along the scroll axis in pixels.
+  ///
+  /// A lone strip item always fills the entire viewport (like a single
+  /// column in Niri). Its stored tiling size is kept as-is and applies
+  /// again as soon as the workspace has more than one tiling child.
+  pub fn strip_item_extent(
+    &self,
+    item: &TilingContainer,
+    viewport_extent: i32,
+  ) -> i32 {
+    if self.tiling_children().nth(1).is_none() {
+      return viewport_extent;
+    }
+
+    item.scrolling_extent(viewport_extent)
+  }
+
   /// Total extent of the strip of tiling children in pixels along the
   /// scroll axis.
   ///
@@ -154,7 +171,7 @@ impl Workspace {
         extent += inner_gap;
       }
 
-      extent += child.scrolling_extent(viewport_extent);
+      extent += self.strip_item_extent(child, viewport_extent);
     }
 
     Ok(extent)
