@@ -1,18 +1,17 @@
 use wm_common::{WmEvent, WorkspaceLayout};
 
 use crate::{
-  models::Workspace,
-  traits::{CommonGetters, TilingSizeGetters, MIN_TILING_SIZE},
-  wm_state::WmState,
+  layouts, models::Workspace, traits::CommonGetters, wm_state::WmState,
 };
 
 /// Switches the layout used by a workspace at runtime.
 ///
-/// When switching to `Scrolling`, the sizes of the workspace's tiling
-/// children are clamped to the valid range of viewport fractions and the
-/// scroll offset is reset so that the focused descendant stays visible.
-/// Switching back to `Tiling` keeps the existing sizes, which are then
-/// reinterpreted as shares of the workspace (see the size semantics in
+/// Layout-specific state updates are applied via
+/// [`layouts::on_layout_changed`] (e.g. switching to scrolling clamps
+/// sizes to the valid range of viewport fractions and resets the scroll
+/// offset so that the focused descendant stays visible). Switching back
+/// to tiling keeps the existing sizes, which are then reinterpreted as
+/// shares of the workspace (see the size semantics in
 /// `docs/scrolling-layout.md`).
 ///
 /// Queues a redraw of the workspace's children and emits a
@@ -23,7 +22,9 @@ pub fn set_workspace_layout(
   layout: &WorkspaceLayout,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
-  if workspace.config().layout == *layout {
+  let prev_layout = workspace.config().layout;
+
+  if prev_layout == *layout {
     return Ok(());
   }
 
@@ -31,9 +32,7 @@ pub fn set_workspace_layout(
   updated_config.layout = layout.clone();
   workspace.set_config(updated_config);
 
-  if *layout == WorkspaceLayout::Scrolling {
-    normalize_for_scrolling(workspace, state)?;
-  }
+  layouts::on_layout_changed(workspace, &prev_layout, layout, state)?;
 
   state
     .pending_sync
@@ -42,40 +41,6 @@ pub fn set_workspace_layout(
   state.emit_event(WmEvent::WorkspaceUpdated {
     updated_workspace: workspace.to_dto()?,
   });
-
-  Ok(())
-}
-
-/// Normalizes a workspace's state for the scrolling layout.
-///
-/// Clamps the sizes of the workspace's top-level tiling children into the
-/// range of valid viewport fractions, resets the scroll offset, and
-/// scrolls the focused descendant into view (a no-op if the focused
-/// container is not in the workspace).
-///
-/// Both the `set-layout` command and config reloads that switch a
-/// workspace's layout to `scrolling` call this, so that the two paths
-/// behave identically.
-pub fn normalize_for_scrolling(
-  workspace: &Workspace,
-  state: &WmState,
-) -> anyhow::Result<()> {
-  // Sizes of strip items are fractions of the viewport. Clamp sizes
-  // that were set as shares of the workspace (e.g. `1/3` with three
-  // windows) into the valid range.
-  for child in workspace.tiling_children() {
-    if let Ok(tiling_child) = child.as_tiling_container() {
-      let clamped_size =
-        tiling_child.tiling_size().clamp(MIN_TILING_SIZE, 1.);
-      tiling_child.set_tiling_size(clamped_size);
-    }
-  }
-
-  workspace.set_scroll_offset(0);
-
-  if let Some(focused_container) = state.focused_container() {
-    workspace.ensure_descendant_visible(&focused_container)?;
-  }
 
   Ok(())
 }
@@ -89,7 +54,7 @@ mod tests {
     commands::container::{attach_container, set_focused_descendant},
     models::{Monitor, TilingWindow, Workspace},
     test_utils::mock_scrolling_workspace,
-    traits::{PositionGetters, TilingSizeGetters},
+    traits::{PositionGetters, TilingSizeGetters, MIN_TILING_SIZE},
   };
 
   #[test]
@@ -185,7 +150,7 @@ mod tests {
     // fully visible.
     assert_eq!(
       workspace.scroll_offset(),
-      workspace.max_scroll_offset().unwrap()
+      layouts::scrolling::max_scroll_offset(&workspace).unwrap()
     );
 
     let viewport_rect = workspace.to_rect().unwrap();

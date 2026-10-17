@@ -1,18 +1,14 @@
 use anyhow::Context;
 
 use super::flatten_split_container;
-use crate::{
-  models::Container,
-  traits::{CommonGetters, TilingSizeGetters, MIN_TILING_SIZE},
-};
+use crate::{layouts, models::Container, traits::CommonGetters};
 
 /// Removes a container from the tree.
 ///
-/// If the container is a tiling container, the siblings will be resized to
-/// fill the freed up space. Will flatten empty parent split containers.
-///
-/// Siblings of a scrolling workspace are not resized, since strip items
-/// are sized as fractions of the viewport, independent of each other.
+/// If the container is a tiling container, the space freed up by the
+/// removal is redistributed according to the parent's layout (see
+/// [`layouts::on_child_detached`]). Will flatten empty parent split
+/// containers.
 #[allow(clippy::needless_pass_by_value)]
 pub fn detach_container(child_to_remove: Container) -> anyhow::Result<()> {
   // Flatten the parent split container if it'll be empty after removing
@@ -38,32 +34,11 @@ pub fn detach_container(child_to_remove: Container) -> anyhow::Result<()> {
 
   *child_to_remove.borrow_parent_mut() = None;
 
-  // Resize the siblings if it is a tiling container. Siblings are left
-  // untouched when the parent is a scrolling workspace.
-  let is_scrolling_workspace = matches!(
-    &parent,
-    Container::Workspace(workspace) if workspace.is_scrolling()
-  );
-
-  if !is_scrolling_workspace {
-    if let Ok(child_to_remove) = child_to_remove.as_tiling_container() {
-      let tiling_siblings = parent.tiling_children().collect::<Vec<_>>();
-
-      // TODO: Share logic with `resize_tiling_container`.
-      let available_size =
-        tiling_siblings.iter().fold(0.0, |sum, container| {
-          sum + container.tiling_size() - MIN_TILING_SIZE
-        });
-
-      // Adjust size of the siblings based on the freed up space.
-      for sibling in &tiling_siblings {
-        let resize_factor =
-          (sibling.tiling_size() - MIN_TILING_SIZE) / available_size;
-
-        let size_delta = resize_factor * child_to_remove.tiling_size();
-        sibling.set_tiling_size(sibling.tiling_size() + size_delta);
-      }
-    }
+  // Redistribute the freed up space amongst the siblings if the removed
+  // container is a tiling container. Layouts whose children are sized
+  // independently (e.g. strip items) leave the sizes untouched.
+  if let Ok(child_to_remove) = child_to_remove.as_tiling_container() {
+    layouts::on_child_detached(&child_to_remove, &parent);
   }
 
   Ok(())
@@ -77,6 +52,7 @@ mod tests {
   use crate::{
     models::{TilingWindow, Workspace},
     test_utils::mock_scrolling_workspace,
+    traits::TilingSizeGetters,
   };
 
   #[test]

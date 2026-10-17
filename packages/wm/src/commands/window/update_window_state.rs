@@ -3,9 +3,8 @@ use tracing::{info, warn};
 use wm_common::WindowState;
 
 use crate::{
-  commands::container::{
-    move_container_within_tree, replace_container, resize_tiling_container,
-  },
+  commands::container::{move_container_within_tree, replace_container},
+  layouts,
   models::{Container, InsertionTarget, WindowContainer},
   traits::{CommonGetters, TilingSizeGetters, WindowGetters},
   user_config::UserConfig,
@@ -105,7 +104,10 @@ fn set_tiling(
     // siblings. E.g. if the window was 0.5 with 1 sibling, and now has 2
     // siblings, scale to 0.5 * (2/3) to maintain proportional sizing.
     let target_size = insertion_target.prev_tiling_size * size_scale;
-    resize_tiling_container(&tiling_window.clone().into(), target_size);
+    layouts::resize_tiling_container(
+      &tiling_window.clone().into(),
+      target_size,
+    );
   }
 
   state

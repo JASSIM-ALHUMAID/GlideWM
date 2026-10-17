@@ -3,6 +3,7 @@ use wm_common::{TilingDirection, WmEvent};
 
 use super::{flatten_split_container, wrap_in_split_container};
 use crate::{
+  layouts,
   models::{Container, DirectionContainer, SplitContainer, TilingWindow},
   traits::{CommonGetters, TilingDirectionGetters},
   user_config::UserConfig,
@@ -44,16 +45,13 @@ fn toggle_window_direction(
     .direction_container()
     .context("No direction container.")?;
 
-  // Toggling the direction of a window in a scrolling workspace flips the
-  // workspace's scroll axis. Wrapping the window in a split container
-  // would create an unwanted column.
-  if let DirectionContainer::Workspace(workspace) = &parent {
-    if workspace.is_scrolling() {
-      workspace
-        .set_tiling_direction(workspace.tiling_direction().inverse());
-
-      return Ok(workspace.clone().into());
-    }
+  // Some layouts handle toggles of their direct children themselves (e.g.
+  // toggling a strip item of a scrolling workspace flips the workspace's
+  // scroll axis instead of wrapping the item in a split container).
+  if let Some(direction_container) =
+    layouts::toggle_child_direction(&parent)
+  {
+    return Ok(direction_container);
   }
 
   // If the window is an only child, then either change the tiling

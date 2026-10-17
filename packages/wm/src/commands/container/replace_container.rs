@@ -1,8 +1,9 @@
 use anyhow::{bail, Context};
 use wm_common::VecDequeExt;
 
-use super::{attach_container, detach_container, resize_tiling_container};
+use super::{attach_container, detach_container};
 use crate::{
+  layouts,
   models::Container,
   traits::{CommonGetters, TilingSizeGetters},
 };
@@ -55,7 +56,10 @@ pub fn replace_container(
     if let Ok(replacement_container) =
       replacement_container.as_tiling_container()
     {
-      resize_tiling_container(&replacement_container, tiling_size);
+      layouts::resize_tiling_container(
+        &replacement_container,
+        tiling_size,
+      );
     }
   }
 

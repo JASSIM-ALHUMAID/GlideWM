@@ -1,4 +1,6 @@
-use crate::{models::Container, traits::CommonGetters, wm_state::WmState};
+use crate::{
+  layouts, models::Container, traits::CommonGetters, wm_state::WmState,
+};
 
 /// Updates scroll offsets of displayed scrolling workspaces.
 ///
@@ -21,7 +23,7 @@ pub fn update_scroll_position(
     .collect::<Vec<_>>();
 
   for workspace in displayed_workspaces {
-    if !workspace.is_scrolling() {
+    if !layouts::supports_scrolling(&workspace) {
       continue;
     }
 
@@ -32,11 +34,13 @@ pub fn update_scroll_position(
       .is_some_and(|focused| focused.id() == workspace.id());
 
     if is_focused_workspace && state.pending_sync.needs_focus_update() {
-      offset_changed |=
-        workspace.ensure_descendant_visible(focused_container)?;
+      offset_changed |= layouts::scrolling::ensure_descendant_visible(
+        &workspace,
+        focused_container,
+      )?;
     }
 
-    offset_changed |= workspace.clamp_scroll_offset()?;
+    offset_changed |= layouts::scrolling::clamp_scroll_offset(&workspace)?;
 
     if offset_changed {
       state.pending_sync.queue_container_to_redraw(workspace);

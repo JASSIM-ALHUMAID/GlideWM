@@ -3,7 +3,7 @@ use wm_common::WindowState;
 use wm_platform::{LengthValue, Rect};
 
 use crate::{
-  commands::container::resize_tiling_container,
+  layouts,
   models::{Container, NonTilingWindow, TilingWindow, WindowContainer},
   traits::{
     CommonGetters, PositionGetters, TilingSizeGetters, WindowGetters,
@@ -71,26 +71,30 @@ fn set_tiling_window_length(
   if let Some(container_to_resize) = container_to_resize {
     let parent = container_to_resize.parent().context("No parent.")?;
 
-    // The length that the target size is a fraction of. Strip items of a
-    // scrolling workspace are sized as a fraction of the viewport along
-    // the scroll axis, rather than as a share of the space alongside
-    // their siblings.
-    #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-    let parent_length = match &parent {
-      Container::Workspace(workspace) if workspace.is_scrolling() => {
-        workspace.viewport_extent()?
+    // The length that the target size is a fraction of. Layouts that size
+    // their direct children relative to the workspace viewport (e.g. strip
+    // items of a scrolling workspace) report a reference length; otherwise
+    // the size is a share of the space available alongside siblings.
+    let viewport_reference = match &parent {
+      Container::Workspace(workspace) => {
+        layouts::child_length_reference(workspace)?
       }
-      _ => {
-        let (horizontal_gap, vertical_gap) =
-          container_to_resize.inner_gaps()?;
+      _ => None,
+    };
 
-        if is_width_resize {
-          parent.to_rect()?.width()
-            - horizontal_gap * window.tiling_siblings().count() as i32
-        } else {
-          parent.to_rect()?.height()
-            - vertical_gap * window.tiling_siblings().count() as i32
-        }
+    #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+    let parent_length = if let Some(reference) = viewport_reference {
+      reference
+    } else {
+      let (horizontal_gap, vertical_gap) =
+        container_to_resize.inner_gaps()?;
+
+      if is_width_resize {
+        parent.to_rect()?.width()
+          - horizontal_gap * window.tiling_siblings().count() as i32
+      } else {
+        parent.to_rect()?.height()
+          - vertical_gap * window.tiling_siblings().count() as i32
       }
     };
 
@@ -99,7 +103,7 @@ fn set_tiling_window_length(
 
     // Skip the resize if the window is already at the target size.
     if container_to_resize.tiling_size() - tiling_size != 0. {
-      resize_tiling_container(&container_to_resize, tiling_size);
+      layouts::resize_tiling_container(&container_to_resize, tiling_size);
 
       state
         .pending_sync
@@ -182,7 +186,8 @@ mod tests {
     );
 
     let mut state = WmState::mock();
-    let viewport_extent = workspace.viewport_extent().unwrap();
+    let viewport_extent =
+      layouts::scrolling::viewport_extent(&workspace).unwrap();
 
     // Strip items are sized as a fraction of the viewport, so a pixel
     // length is converted using the viewport extent rather than the space

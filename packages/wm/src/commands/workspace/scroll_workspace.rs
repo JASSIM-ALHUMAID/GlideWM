@@ -1,7 +1,10 @@
 use wm_common::TilingDirection;
 use wm_platform::{Direction, LengthUnit, LengthValue};
 
-use crate::{models::Workspace, wm_state::WmState};
+use crate::{
+  layouts, models::Workspace, traits::TilingDirectionGetters,
+  wm_state::WmState,
+};
 
 /// Amount scrolled when the `scroll` command is invoked without an
 /// explicit amount, as a fraction of the viewport.
@@ -24,17 +27,18 @@ pub fn scroll_workspace(
   amount: Option<&LengthValue>,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
-  if !workspace.is_scrolling() {
+  if !layouts::supports_scrolling(workspace) {
     return Ok(());
   }
 
   // Only directions along the scroll axis scroll the strip.
-  if TilingDirection::from_direction(direction) != workspace.scroll_axis()
+  if TilingDirection::from_direction(direction)
+    != workspace.tiling_direction()
   {
     return Ok(());
   }
 
-  let viewport_extent = workspace.viewport_extent()?;
+  let viewport_extent = layouts::scrolling::viewport_extent(workspace)?;
 
   // Pixel amounts are interpreted as physical pixels; percentage amounts
   // as a fraction of the viewport extent.
@@ -50,7 +54,8 @@ pub fn scroll_workspace(
   };
 
   let offset_changed = workspace.set_scroll_offset(new_offset);
-  let offset_changed = workspace.clamp_scroll_offset()? || offset_changed;
+  let offset_changed =
+    layouts::scrolling::clamp_scroll_offset(workspace)? || offset_changed;
 
   if offset_changed {
     state
@@ -138,7 +143,7 @@ mod tests {
     assert_eq!(workspace.scroll_offset(), 840);
     assert_eq!(
       workspace.scroll_offset(),
-      workspace.max_scroll_offset().unwrap()
+      layouts::scrolling::max_scroll_offset(&workspace).unwrap()
     );
 
     // Scrolling past the start of the strip clamps to 0.

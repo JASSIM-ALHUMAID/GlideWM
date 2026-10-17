@@ -2,19 +2,14 @@ use anyhow::Context;
 use tracing::{info, warn};
 #[cfg(target_os = "windows")]
 use wm_common::{HideMethod, ParsedConfig};
-use wm_common::{WindowRuleEvent, WmEvent, WorkspaceLayout};
+use wm_common::{WindowRuleEvent, WmEvent};
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 
 use crate::{
-  commands::{
-    window::run_window_rules,
-    workspace::{normalize_for_scrolling, sort_workspaces},
-  },
-  traits::{
-    CommonGetters, TilingDirectionGetters, TilingSizeGetters,
-    WindowGetters,
-  },
+  commands::{window::run_window_rules, workspace::sort_workspaces},
+  layouts,
+  traits::{CommonGetters, TilingSizeGetters, WindowGetters},
   user_config::UserConfig,
   wm::WindowManager,
   wm_state::WmState,
@@ -100,10 +95,10 @@ pub fn reload_config(
 
 /// Updates configs of active workspaces.
 ///
-/// When a workspace's config switches it to the scrolling layout, its
-/// state is normalized the same way as in the `set-layout` command (see
-/// `normalize_for_scrolling`), and the scroll axis from the config is
-/// applied as the workspace's tiling direction.
+/// Layout-specific state updates after a config change (e.g. applying
+/// the scroll axis as the workspace's tiling direction, and normalizing
+/// a workspace's state when the config switches it to the scrolling
+/// layout) are applied via [`layouts::on_workspace_config_reloaded`].
 fn update_workspace_configs(
   state: &mut WmState,
   config: &UserConfig,
@@ -139,25 +134,12 @@ fn update_workspace_configs(
 
           workspace.set_config(workspace_config.clone());
 
-          if workspace_config.layout == WorkspaceLayout::Scrolling {
-            // The scroll axis doubles as the workspace's tiling
-            // direction while the scrolling layout is active. Keep it
-            // in sync with the config.
-            if prev_config.layout != WorkspaceLayout::Scrolling
-              || prev_config.scroll.axis != workspace_config.scroll.axis
-            {
-              workspace.set_tiling_direction(
-                workspace_config.scroll.axis.clone(),
-              );
-            }
-
-            // Normalize state when the layout was just switched to
-            // scrolling, so that the switch behaves like the
-            // `set-layout` command.
-            if prev_config.layout != WorkspaceLayout::Scrolling {
-              normalize_for_scrolling(workspace, state)?;
-            }
-          }
+          layouts::on_workspace_config_reloaded(
+            workspace,
+            &prev_config,
+            workspace_config,
+            state,
+          )?;
 
           sort_workspaces(&monitor, config)?;
 
@@ -365,7 +347,7 @@ mod tests {
 
     assert_eq!(
       workspace.scroll_offset(),
-      workspace.max_scroll_offset().unwrap()
+      layouts::scrolling::max_scroll_offset(&workspace).unwrap()
     );
 
     let viewport_rect = workspace.to_rect().unwrap();

@@ -2,8 +2,8 @@ use anyhow::Context;
 #[cfg(target_os = "windows")]
 use wm_common::WindowEffectConfig;
 use wm_common::{
-  CursorJumpTrigger, DisplayState, HideCorner, HideMethod,
-  TilingDirection, UniqueExt, WindowState, WmEvent,
+  CursorJumpTrigger, DisplayState, HideCorner, HideMethod, UniqueExt,
+  WindowState, WmEvent,
 };
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
@@ -13,6 +13,7 @@ use wm_platform::{Rect, WindowZOrder};
 
 use crate::{
   commands::workspace::update_scroll_position,
+  layouts,
   models::{Container, WindowContainer},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
@@ -274,7 +275,7 @@ fn redraw_containers(
     // Compute the rect to position the window at. Tiling windows of a
     // scrolling workspace are clamped just beyond the viewport edge
     // when they are scrolled out of view.
-    let placement = match window_placement(window) {
+    let placement = match layouts::window_placement(window) {
       Ok(placement) => placement,
       Err(err) => {
         tracing::warn!("Failed to compute window placement: {}", err);
@@ -381,113 +382,9 @@ fn transition_display_state(
   }
 }
 
-/// Placement that a window should be positioned at, and whether it is
-/// currently scrolled out of view.
-struct ScrollingPlacement {
-  /// Rect (including border delta) to position the window at. The rect
-  /// of windows that are scrolled out of view is clamped just beyond
-  /// the edge of the viewport.
-  rect: Rect,
-
-  /// Whether the window is a tiling window of a displayed scrolling
-  /// workspace that does not intersect the workspace's viewport.
-  is_scrolled_out: bool,
-}
-
-/// Computes the rect to position the given window at.
-fn window_placement(
-  window: &WindowContainer,
-) -> anyhow::Result<ScrollingPlacement> {
-  let rect = window
-    .to_rect()?
-    .apply_delta(&window.total_border_delta()?, None);
-
-  scrolling_placement(window, rect)
-}
-
-/// Applies scrolling layout positioning rules to the given rect.
-///
-/// Tiling windows that are scrolled fully outside the viewport of a
-/// displayed scrolling workspace are clamped so that their edge sits
-/// flush just beyond the viewport's edge. This pairs with hiding the
-/// window in [`redraw_containers`]: cloaking guards against
-/// peek-through while the cloak is applied (see
-/// `docs/scrolling-layout.md` §5).
-fn scrolling_placement(
-  window: &WindowContainer,
-  rect: Rect,
-) -> anyhow::Result<ScrollingPlacement> {
-  let is_positioned = || ScrollingPlacement {
-    rect: rect.clone(),
-    is_scrolled_out: false,
-  };
-
-  // Only tiling windows of a displayed scrolling workspace can be
-  // scrolled out of view.
-  if !matches!(window, WindowContainer::TilingWindow(_)) {
-    return Ok(is_positioned());
-  }
-
-  let Some(workspace) = window.workspace() else {
-    return Ok(is_positioned());
-  };
-
-  if !workspace.is_scrolling() || !workspace.is_displayed() {
-    return Ok(is_positioned());
-  }
-
-  let viewport_rect = workspace.to_rect()?;
-
-  let (rect, is_scrolled_out) = match workspace.scroll_axis() {
-    TilingDirection::Horizontal => {
-      if rect.right <= viewport_rect.left {
-        // Scrolled out of view to the left: clamp so that the right
-        // edge of the window is flush with the viewport's left edge.
-        (
-          rect.translate_to_coordinates(
-            viewport_rect.left - rect.width(),
-            rect.top,
-          ),
-          true,
-        )
-      } else if rect.left >= viewport_rect.right {
-        (
-          rect.translate_to_coordinates(viewport_rect.right, rect.top),
-          true,
-        )
-      } else {
-        (rect, false)
-      }
-    }
-    TilingDirection::Vertical => {
-      if rect.bottom <= viewport_rect.top {
-        (
-          rect.translate_to_coordinates(
-            rect.left,
-            viewport_rect.top - rect.height(),
-          ),
-          true,
-        )
-      } else if rect.top >= viewport_rect.bottom {
-        (
-          rect.translate_to_coordinates(rect.left, viewport_rect.bottom),
-          true,
-        )
-      } else {
-        (rect, false)
-      }
-    }
-  };
-
-  Ok(ScrollingPlacement {
-    rect,
-    is_scrolled_out,
-  })
-}
-
 fn reposition_window(
   window: &WindowContainer,
-  placement: ScrollingPlacement,
+  placement: layouts::WindowPlacement,
   hide_corner: HideCorner,
   // LINT: `z_order` is only used on Windows.
   #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
@@ -769,101 +666,7 @@ fn apply_transparency_effect(
 
 #[cfg(test)]
 mod tests {
-  use wm_common::{GapsConfig, ScrollConfig};
-
   use super::*;
-  use crate::{
-    commands::container::attach_container,
-    models::{Monitor, TilingWindow, Workspace},
-    test_utils::mock_scrolling_workspace,
-  };
-
-  #[test]
-  fn clamps_horizontally_scrolled_out_windows() {
-    let (_workspace, windows) = mock_scrolling_workspace(
-      TilingDirection::Horizontal,
-      1,
-      0.5,
-      &GapsConfig::default(),
-      ScrollConfig::default(),
-    );
-
-    // Viewport is the monitor's working area: (0, 0, 1680, 1000).
-    let window = windows[0].clone().into();
-
-    // Fully out of view to the right: clamp so that the left edge of
-    // the window is flush with the viewport's right edge.
-    let rect = Rect::from_xy(3000, 0, 840, 1000);
-    let placement = scrolling_placement(&window, rect).unwrap();
-    assert!(placement.is_scrolled_out);
-    assert_eq!(placement.rect.x(), 1680);
-    assert_eq!(placement.rect.width(), 840);
-
-    // Fully out of view to the left: clamp so that the right edge of
-    // the window is flush with the viewport's left edge.
-    let rect = Rect::from_xy(-2000, 0, 840, 1000);
-    let placement = scrolling_placement(&window, rect).unwrap();
-    assert!(placement.is_scrolled_out);
-    assert_eq!(placement.rect.right, 0);
-
-    // Partially visible windows keep their natural rect.
-    let rect = Rect::from_xy(1500, 0, 840, 1000);
-    let placement = scrolling_placement(&window, rect).unwrap();
-    assert!(!placement.is_scrolled_out);
-    assert_eq!(placement.rect.x(), 1500);
-  }
-
-  #[test]
-  fn clamps_vertically_scrolled_out_windows() {
-    let (_workspace, windows) = mock_scrolling_workspace(
-      TilingDirection::Vertical,
-      1,
-      0.5,
-      &GapsConfig::default(),
-      ScrollConfig::default(),
-    );
-
-    let window = windows[0].clone().into();
-
-    // Fully out of view at the bottom: clamp so that the top edge of
-    // the window is flush with the viewport's bottom edge.
-    let rect = Rect::from_xy(0, 3000, 1680, 500);
-    let placement = scrolling_placement(&window, rect).unwrap();
-    assert!(placement.is_scrolled_out);
-    assert_eq!(placement.rect.y(), 1000);
-    assert_eq!(placement.rect.height(), 500);
-
-    // Fully out of view at the top: clamp so that the bottom edge of
-    // the window is flush with the viewport's top edge.
-    let rect = Rect::from_xy(0, -2000, 1680, 500);
-    let placement = scrolling_placement(&window, rect).unwrap();
-    assert!(placement.is_scrolled_out);
-    assert_eq!(placement.rect.bottom, 0);
-  }
-
-  #[test]
-  fn keeps_rect_of_non_scrolling_windows() {
-    // Tiling window of a non-scrolling workspace.
-    let workspace = Workspace::mock().call();
-
-    let window = TilingWindow::mock().call();
-    attach_container(
-      &window.clone().into(),
-      &workspace.clone().into(),
-      None,
-    )
-    .unwrap();
-
-    let _monitor =
-      Monitor::mock().workspaces(vec![workspace.clone()]).call();
-
-    let rect = Rect::from_xy(3000, 0, 840, 1000);
-    let placement =
-      scrolling_placement(&window.clone().into(), rect.clone()).unwrap();
-
-    assert!(!placement.is_scrolled_out);
-    assert_eq!(placement.rect, rect);
-  }
 
   #[test]
   fn transitions_to_hiding_when_scrolled_out() {

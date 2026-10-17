@@ -1,17 +1,11 @@
 use anyhow::bail;
 
-use super::resize_tiling_container;
-use crate::{
-  models::Container,
-  traits::{CommonGetters, TilingSizeGetters},
-};
+use crate::{layouts, models::Container, traits::CommonGetters};
 
 /// Inserts a child container at the specified index.
 ///
-/// The inserted child will be resized to fit the available space, unless
-/// the target parent is a scrolling workspace. Tiling children of a
-/// scrolling workspace are strip items that are sized as a fraction of
-/// the viewport, independent of their siblings.
+/// If the child is a tiling container, it is sized according to the
+/// target parent's layout (see [`layouts::on_child_attached`]).
 pub fn attach_container(
   child: &Container,
   target_parent: &Container,
@@ -39,32 +33,12 @@ pub fn attach_container(
 
   *child.borrow_parent_mut() = Some(target_parent.clone());
 
-  // Resize the child and its siblings if it is a tiling container.
+  // Size the child alongside its tiling siblings if it is a tiling
+  // container. Layouts whose direct children are sized independently
+  // (e.g. strip items) leave sizes untouched: new windows are sized by
+  // `create_window`, and moved containers keep their size.
   if let Ok(child) = child.as_tiling_container() {
-    // Strip items of a scrolling workspace are sized as a fraction of
-    // the viewport, independent of their siblings. Leave the size
-    // untouched: new windows are sized by `create_window`, and moved
-    // containers keep their size.
-    if matches!(
-      target_parent,
-      Container::Workspace(workspace) if workspace.is_scrolling()
-    ) {
-      return Ok(());
-    }
-
-    let tiling_siblings = child.tiling_siblings().collect::<Vec<_>>();
-
-    if tiling_siblings.is_empty() {
-      child.set_tiling_size(1.0);
-      return Ok(());
-    }
-
-    // Set initial tiling size to 0, and then size up the container
-    // to the target size.
-    #[allow(clippy::cast_precision_loss)]
-    let target_size = 1.0 / (tiling_siblings.len() + 1) as f32;
-    child.set_tiling_size(0.0);
-    resize_tiling_container(&child, target_size);
+    layouts::on_child_attached(&child, target_parent);
   }
 
   Ok(())
@@ -78,6 +52,7 @@ mod tests {
   use crate::{
     models::{TilingWindow, Workspace},
     test_utils::mock_scrolling_workspace,
+    traits::TilingSizeGetters,
   };
 
   #[test]

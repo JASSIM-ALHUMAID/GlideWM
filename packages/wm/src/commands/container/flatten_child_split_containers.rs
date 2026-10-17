@@ -1,6 +1,7 @@
 use super::flatten_split_container;
 use crate::{
-  models::{Container, DirectionContainer},
+  layouts,
+  models::Container,
   traits::{CommonGetters, TilingDirectionGetters},
 };
 
@@ -14,18 +15,16 @@ use crate::{
 /// H[V[1]] -> V[1]
 /// ```
 ///
-/// A split container that is a child of a scrolling workspace is an
-/// explicit column and is only flattened when it contains a single window.
-/// The workspace's tiling direction (i.e. its scroll axis) is never
-/// inverted, since that would flip the direction of the strip.
+/// For layouts that preserve top-level split children as explicit
+/// "columns" (see [`layouts::preserves_split_children`]), a column is
+/// only flattened when it contains a single window, and the parent's
+/// tiling direction is never inverted.
 pub fn flatten_child_split_containers(
   parent: &Container,
 ) -> anyhow::Result<()> {
   if let Ok(parent) = parent.as_direction_container() {
-    let is_scrolling_workspace = matches!(
-      &parent,
-      DirectionContainer::Workspace(workspace) if workspace.is_scrolling()
-    );
+    let preserves_split_children =
+      layouts::preserves_split_children(&parent);
 
     // Get children that are either tiling windows or split containers.
     let tiling_children = parent
@@ -38,9 +37,9 @@ pub fn flatten_child_split_containers(
       // Handle case where the parent is a split container and has a
       // single split container child.
       if let Some(split_child) = tiling_children[0].as_split() {
-        // A column of a scrolling workspace is only redundant if it
-        // contains a single window. Multi-window columns are preserved.
-        if is_scrolling_workspace {
+        // A column is only redundant if it contains a single window.
+        // Multi-window columns are preserved.
+        if preserves_split_children {
           if split_child.child_count() == 1 {
             flatten_split_container(split_child.clone())?;
           }

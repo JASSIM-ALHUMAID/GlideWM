@@ -4,13 +4,13 @@ use wm_platform::{Direction, Rect};
 
 use crate::{
   commands::container::{
-    flatten_child_split_containers, flatten_split_container,
-    move_container_within_tree, resize_tiling_container,
-    set_focused_descendant, wrap_in_split_container,
+    flatten_split_container, move_container_within_tree,
+    set_focused_descendant,
   },
+  layouts,
   models::{
-    DirectionContainer, Monitor, NonTilingWindow, SplitContainer,
-    TilingContainer, TilingWindow, WindowContainer,
+    DirectionContainer, Monitor, NonTilingWindow, TilingContainer,
+    TilingWindow, WindowContainer,
   },
   traits::{
     CommonGetters, PositionGetters, TilingDirectionGetters, WindowGetters,
@@ -71,41 +71,15 @@ fn move_tiling_window(
   let has_matching_tiling_direction = parent.tiling_direction()
     == TilingDirection::from_direction(direction);
 
-  // A window that is a direct child of a scrolling workspace is a strip
-  // item. Moving it along the scroll axis reorders it within the strip;
-  // moving it cross-axis moves it to the workspace (or monitor) in that
-  // direction. The workspace's tiling direction (i.e. its scroll axis) is
-  // never inverted.
-  if let DirectionContainer::Workspace(workspace) = &parent {
-    if workspace.is_scrolling() {
-      if has_matching_tiling_direction {
-        if let Some(sibling) =
-          tiling_sibling_in_direction(&window_to_move, direction)
-        {
-          // Swap positions with the sibling strip item, which can be a
-          // window or a column (split container). Sizes are preserved.
-          move_container_within_tree(
-            &window_to_move.clone().into(),
-            &parent.clone().into(),
-            sibling.index(),
-            state,
-          )?;
-
-          state
-            .pending_sync
-            .queue_container_to_redraw(sibling)
-            .queue_container_to_redraw(window_to_move);
-
-          return Ok(());
-        }
-      }
-
-      return move_to_workspace_in_direction(
-        &window_to_move.into(),
-        direction,
-        state,
-      );
-    }
+  // Layouts can handle moves of their direct children themselves (e.g.
+  // strip items of a scrolling workspace are reordered within the strip,
+  // or moved to the workspace in the given direction when there is no
+  // sibling in that direction). The workspace's tiling direction (i.e.
+  // its scroll axis) is never inverted.
+  if let Some(result) =
+    layouts::move_child_in_direction(&window_to_move, direction, state)
+  {
+    return result;
   }
 
   // Attempt to swap or move the window into a sibling container.
@@ -144,31 +118,16 @@ fn move_tiling_window(
   });
 
   match target_ancestor {
-    // If there is no suitable ancestor, then change the tiling direction
-    // of the workspace.
-    None => {
-      let workspace =
-        window_to_move.workspace().context("No workspace.")?;
-
-      // The tail logic for non-scrolling workspaces inverts the
-      // workspace's tiling direction to make room for the window. In a
-      // scrolling workspace this would flip the scroll axis, so move the
-      // window to the workspace in the given direction instead.
-      if workspace.is_scrolling() {
-        move_to_workspace_in_direction(
-          &window_to_move.into(),
-          direction,
-          state,
-        )
-      } else {
-        invert_workspace_tiling_direction(
-          window_to_move,
-          direction,
-          state,
-          config,
-        )
-      }
-    }
+    // If there is no suitable ancestor, the layout makes room for the
+    // window: tiling workspaces invert their tiling direction, while
+    // strip-style layouts move the window to the workspace in the given
+    // direction instead (see `layouts::move_without_target_ancestor`).
+    None => layouts::move_without_target_ancestor(
+      &window_to_move,
+      direction,
+      state,
+      config,
+    ),
     // Otherwise, move the container into the given ancestor. This could
     // simply be the container's direct parent.
     Some(target_ancestor) => insert_into_ancestor(
@@ -182,7 +141,9 @@ fn move_tiling_window(
 
 /// Gets the next sibling `TilingWindow` or `SplitContainer` in the given
 /// direction.
-fn tiling_sibling_in_direction(
+///
+/// Also used by the layouts module to reorder strip items.
+pub(crate) fn tiling_sibling_in_direction(
   window: &TilingWindow,
   direction: &Direction,
 ) -> Option<TilingContainer> {
@@ -260,7 +221,10 @@ fn move_to_sibling_container(
   Ok(())
 }
 
-fn move_to_workspace_in_direction(
+/// Moves a window to the workspace (or monitor) in the given direction.
+///
+/// Also used by the layouts module to move strip items cross-axis.
+pub(crate) fn move_to_workspace_in_direction(
   window_to_move: &WindowContainer,
   direction: &Direction,
   state: &mut WmState,
@@ -326,70 +290,6 @@ fn move_to_workspace_in_direction(
       .queue_cursor_jump()
       .queue_workspace_to_reorder(target_workspace);
   }
-
-  Ok(())
-}
-
-fn invert_workspace_tiling_direction(
-  window_to_move: TilingWindow,
-  direction: &Direction,
-  state: &mut WmState,
-  config: &UserConfig,
-) -> anyhow::Result<()> {
-  let workspace = window_to_move.workspace().context("No workspace.")?;
-
-  // Get top-level tiling children of the workspace.
-  let workspace_children = workspace
-    .tiling_children()
-    .filter(|container| container.id() != window_to_move.id())
-    .collect::<Vec<_>>();
-
-  // Create a new split container to wrap the window's siblings. For
-  // example, in the layout H[1 V[2 3]] where container 3 is moved down,
-  // we create a split container around 1 and 2. This results in
-  // H[H[1 V[2 3]]], and V[H[1 V[2]] 3] after the tiling direction change.
-  if workspace_children.len() > 1 {
-    let split_container = SplitContainer::new(
-      workspace.tiling_direction(),
-      config.value.gaps.clone(),
-    );
-
-    wrap_in_split_container(
-      &split_container,
-      &workspace.clone().into(),
-      &workspace_children,
-    )?;
-  }
-
-  // Invert the tiling direction of the workspace.
-  workspace.set_tiling_direction(workspace.tiling_direction().inverse());
-
-  let target_index = match direction {
-    Direction::Left | Direction::Up => 0,
-    _ => workspace.child_count(),
-  };
-
-  // Depending on the direction, place the window either before or after
-  // the split container.
-  move_container_within_tree(
-    &window_to_move.clone().into(),
-    &workspace.clone().into(),
-    target_index,
-    state,
-  )?;
-
-  // Workspace might have redundant split containers after the tiling
-  // direction change. For example, V[H[1 2] 3] where container 3 is moved
-  // up results in H[3 H[1 2]], and needs to be flattened to H[3 1 2].
-  flatten_child_split_containers(&workspace.clone().into())?;
-
-  // Resize the window such that the split container and window are each
-  // 0.5.
-  resize_tiling_container(&window_to_move.into(), 0.5);
-
-  state
-    .pending_sync
-    .queue_containers_to_redraw(workspace.tiling_children());
 
   Ok(())
 }

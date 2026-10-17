@@ -37,6 +37,7 @@ use crate::{
 mod commands;
 mod events;
 mod ipc_server;
+mod layouts;
 mod models;
 mod pending_sync;
 mod sys_tray;

@@ -4,10 +4,10 @@ use wm_common::WindowState;
 
 use crate::{
   commands::{
-    container::{move_container_within_tree, set_focused_descendant},
-    workspace::activate_workspace,
+    container::set_focused_descendant, workspace::activate_workspace,
   },
-  models::{WindowContainer, Workspace, WorkspaceTarget},
+  layouts,
+  models::{WindowContainer, WorkspaceTarget},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -88,7 +88,7 @@ pub fn move_window_to_workspace(
       .find(|descendant| descendant.state() == WindowState::Tiling);
 
     // Insert the window into the target workspace.
-    insert_window_into_workspace(
+    layouts::insert_window_into_workspace(
       &window,
       &target_workspace,
       insertion_sibling,
@@ -131,54 +131,6 @@ pub fn move_window_to_workspace(
   }
 
   Ok(())
-}
-
-/// Inserts the window into the target workspace.
-///
-/// When the target workspace is scrolling, tiling windows are inserted at
-/// the strip level directly after the strip item that contains
-/// `insertion_sibling` (or appended to the end of the strip if the target
-/// workspace has no tiling windows). Columns are never entered, so the
-/// window always becomes a strip item of its own.
-///
-/// Otherwise, the window is inserted into the sibling's parent at the
-/// sibling's index + 1, or appended to the workspace if there is no
-/// sibling to insert after.
-fn insert_window_into_workspace(
-  window: &WindowContainer,
-  target_workspace: &Workspace,
-  insertion_sibling: Option<WindowContainer>,
-  state: &mut WmState,
-) -> anyhow::Result<()> {
-  if window.is_tiling_window() && target_workspace.is_scrolling() {
-    let insert_index = insertion_sibling
-      .and_then(|sibling| {
-        target_workspace.strip_item_index(&sibling.into())
-      })
-      .map_or(target_workspace.child_count(), |index| index + 1);
-
-    return move_container_within_tree(
-      &window.clone().into(),
-      &target_workspace.clone().into(),
-      insert_index,
-      state,
-    );
-  }
-
-  match (window.is_tiling_window(), insertion_sibling) {
-    (true, Some(insertion_sibling)) => move_container_within_tree(
-      &window.clone().into(),
-      &insertion_sibling.clone().parent().context("No parent.")?,
-      insertion_sibling.index() + 1,
-      state,
-    ),
-    _ => move_container_within_tree(
-      &window.clone().into(),
-      &target_workspace.clone().into(),
-      target_workspace.child_count(),
-      state,
-    ),
-  }
 }
 
 #[cfg(test)]

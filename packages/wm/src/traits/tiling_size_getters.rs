@@ -5,7 +5,10 @@ use anyhow::Context;
 use wm_common::{GapsConfig, TilingDirection};
 
 use super::{CommonGetters, TilingDirectionGetters};
-use crate::models::{Container, DirectionContainer, TilingContainer};
+use crate::{
+  layouts,
+  models::{Container, DirectionContainer, TilingContainer},
+};
 
 pub const MIN_TILING_SIZE: f32 = 0.01;
 
@@ -18,19 +21,6 @@ pub trait TilingSizeGetters: CommonGetters {
   fn gaps_config(&self) -> Ref<'_, GapsConfig>;
 
   fn set_gaps_config(&self, gaps_config: GapsConfig);
-
-  /// Size of this container in pixels along the scroll axis when it is a
-  /// child of a scrolling workspace.
-  ///
-  /// This interprets `tiling_size` as a fraction of the viewport extent
-  /// along the scroll axis, instead of as a share of the available space.
-  fn scrolling_extent(&self, viewport_extent: i32) -> i32 {
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
-    let extent =
-      (self.tiling_size() * viewport_extent as f32).round() as i32;
-
-    extent.max(1)
-  }
 
   /// Gets the horizontal and vertical gaps between windows in pixels.
   fn inner_gaps(&self) -> anyhow::Result<(i32, i32)> {
@@ -69,18 +59,16 @@ pub trait TilingSizeGetters: CommonGetters {
       TilingDirection::Vertical => is_width_resize,
     };
 
-    // A top-level child of a scrolling workspace (i.e. a strip item) is
-    // resized directly along the scroll axis, regardless of whether it
-    // has siblings. Cross-axis resizes are ignored, since strip items
-    // fill the viewport cross-axis.
-    if let DirectionContainer::Workspace(workspace) = &parent {
-      if workspace.is_scrolling() {
-        return Ok(if is_inverse_resize {
-          None
-        } else {
-          Some(self.as_tiling_container()?)
-        });
+    // Some layouts resize their direct children directly (e.g. strip
+    // items of a scrolling workspace are resized along the scroll axis,
+    // regardless of whether they have siblings). Cross-axis resizes are
+    // ignored, since strip items fill the viewport cross-axis.
+    match layouts::direct_child_resize(&parent, is_width_resize) {
+      layouts::DirectChildResize::Resize => {
+        return Ok(Some(self.as_tiling_container()?));
       }
+      layouts::DirectChildResize::Skip => return Ok(None),
+      layouts::DirectChildResize::FallThrough => {}
     }
 
     let container_to_resize = if is_inverse_resize {

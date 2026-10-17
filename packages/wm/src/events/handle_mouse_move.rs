@@ -5,7 +5,8 @@ use wm_platform::{MouseButton, MouseEvent, Point};
 
 use crate::{
   commands::container::set_focused_descendant,
-  models::{WindowContainer, Workspace},
+  layouts,
+  models::WindowContainer,
   traits::{CommonGetters, PositionGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -153,7 +154,7 @@ fn is_within_visible_rect(
   let is_in_viewport = match window {
     WindowContainer::TilingWindow(_) => window
       .workspace()
-      .filter(Workspace::is_scrolling)
+      .filter(layouts::clips_children_to_viewport)
       .and_then(|workspace| workspace.to_rect().ok())
       .is_none_or(|viewport_rect| viewport_rect.contains_point(point)),
     WindowContainer::NonTilingWindow(_) => true,

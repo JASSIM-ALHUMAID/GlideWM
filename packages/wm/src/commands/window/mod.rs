@@ -12,6 +12,9 @@ mod update_window_state;
 pub use ignore_window::*;
 pub use manage_window::*;
 pub use move_window_in_direction::*;
+pub(crate) use move_window_in_direction::{
+  move_to_workspace_in_direction, tiling_sibling_in_direction,
+};
 pub use move_window_to_workspace::*;
 pub use resize_window::*;
 pub use run_window_rules::*;
