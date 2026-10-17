@@ -354,9 +354,13 @@ fn redraw_containers(
 
     if let Some(animation) = &animation {
       #[cfg(target_os = "windows")]
-      if let Err(err) =
-        apply_window_animation(window, animation, &z_order, config)
-      {
+      if let Err(err) = apply_window_animation(
+        window,
+        animation,
+        &z_order,
+        state.animations.is_awaiting_reveal(window.id()),
+        config,
+      ) {
         tracing::warn!("Failed to apply window animation: {}", err);
       }
 
@@ -589,16 +593,20 @@ fn reposition_window(
 /// Windows that are sliding out aren't repositioned here — the animation
 /// worker captures their current frame as the start of the animation and
 /// the final position/hide is applied once the animation completes.
+///
+/// Windows that are cloaked until their open slide's park frame lands
+/// are revealed by the animation worker instead of here (see
+/// `AnimationUpdate::RevealCloakedWindow`).
 #[cfg(target_os = "windows")]
 fn apply_window_animation(
   window: &WindowContainer,
   animation: &WindowAnimation,
   z_order: &WindowZOrder,
+  is_awaiting_reveal: bool,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
   use wm_platform::{
-    SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS,
-    SWP_NOSENDCHANGING,
+    SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING,
   };
 
   if let WindowAnimation::SlideIn { start_rect } = animation {
@@ -607,20 +615,28 @@ fn apply_window_animation(
       start_rect
     );
 
+    // The frame is applied without `SWP_FRAMECHANGED`: a position-only
+    // change doesn't need a non-client frame recalculation.
     let swp_flags = SWP_NOACTIVATE
       | SWP_NOCOPYBITS
       | SWP_NOSENDCHANGING
-      | SWP_ASYNCWINDOWPOS
-      | SWP_FRAMECHANGED;
+      | SWP_ASYNCWINDOWPOS;
 
     window.native().set_window_pos(z_order, start_rect, swp_flags)?;
 
     // Make the window visible before the animation starts. Windows are
     // normally made visible by `reposition_window`.
-    if config.value.general.hide_method == HideMethod::Cloak {
-      window.native().set_cloaked(false)?;
-    } else {
-      window.native().show()?;
+    //
+    // A window that's cloaked while its open slide waits for its park
+    // frame is revealed by the animation worker instead — revealing it
+    // here would undo the cloak and show the window at its old
+    // position.
+    if !is_awaiting_reveal {
+      if config.value.general.hide_method == HideMethod::Cloak {
+        window.native().set_cloaked(false)?;
+      } else {
+        window.native().show()?;
+      }
     }
   }
 

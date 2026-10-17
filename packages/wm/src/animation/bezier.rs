@@ -206,8 +206,8 @@ mod tests {
 
   #[test]
   fn overshooting_curve_overshoots() {
-    // The default curve has a `y2` control point above `1.0`.
-    let curve = CubicBezier::from(&AnimationCurve::default());
+    // A back-ease style curve with a `y` control point above `1.0`.
+    let curve = CubicBezier::new(0.05, 0.9, 0.1, 1.05);
 
     let max = (0..=100)
       .map(|i| curve.ease(f64::from(i) / 100.0))
@@ -215,5 +215,21 @@ mod tests {
 
     assert!(max > 1.0, "expected overshoot, got max {max}");
     assert!(max < 1.1, "unexpectedly large overshoot: {max}");
+  }
+
+  #[test]
+  fn default_curve_stays_within_range() {
+    // The default curve is used for window slides, which are
+    // translations: it must not overshoot its target.
+    let curve = CubicBezier::from(&AnimationCurve::default());
+
+    for i in 0..=100 {
+      let eased = curve.ease(f64::from(i) / 100.0);
+
+      assert!(
+        (0.0..=1.0).contains(&eased),
+        "ease({i}%) = {eased}, expected within [0, 1]"
+      );
+    }
   }
 }

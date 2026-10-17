@@ -71,7 +71,9 @@ pub struct WorkspaceSwitch {
 pub enum WindowAnimation {
   /// Window slides in from beyond an edge of its monitor. The caller is
   /// expected to position the window at `start_rect` and make it
-  /// visible; the worker animates it to its final position.
+  /// visible; the worker animates it to its final position. A window
+  /// that's cloaked until its open slide is parked is revealed by the
+  /// worker instead (see `AnimationUpdate::RevealCloakedWindow`).
   SlideIn {
     /// Frame to position the window at before the animation starts.
     start_rect: Rect,
@@ -126,10 +128,15 @@ pub enum AnimationUpdate {
   /// it was waiting to be parked can be lifted now.
   ///
   /// The cloak must be lifted on the main thread, because cloaking uses
-  /// shell COM objects.
+  /// shell COM objects. The main thread confirms the reveal once the
+  /// cloak is lifted (see `Animations::confirm_reveal`), which starts
+  /// the window's slide.
   RevealCloakedWindow {
     /// ID of the window to reveal.
     window_id: Uuid,
+
+    /// Sequence number of the animation that requested the reveal.
+    sequence: u64,
   },
 }
 
@@ -207,6 +214,21 @@ impl SlideEdge {
       Self::Bottom => Direction::Down,
     }
   }
+}
+
+/// Gets the current frame of a window from the OS.
+///
+/// Used to retarget a slide from where the window currently is, instead
+/// of from where it was originally planned to start.
+#[cfg(target_os = "windows")]
+fn get_window_frame(window: &WindowContainer) -> Option<Rect> {
+  wm_platform::window_frame(window.native().id().0)
+}
+
+/// Always `None` on platforms without window animations.
+#[cfg(not(target_os = "windows"))]
+fn get_window_frame(_window: &WindowContainer) -> Option<Rect> {
+  None
 }
 
 /// Animation state managed on the main thread.
@@ -470,10 +492,19 @@ impl Animations {
     let slide_distance = edge_length + SLIDE_MARGIN_PX;
 
     let (from_rect, to_rect, kind, animation) = if is_entering {
-      let start_rect = placement.rect.translate_in_direction(
+      let edge_rect = placement.rect.translate_in_direction(
         &slide_edge.to_direction(),
         slide_distance,
       );
+
+      // A window that's already mid-slide (e.g. its workspace was
+      // switched away from and back before the slide finished) resumes
+      // from its current frame, instead of snapping back to the edge.
+      let start_rect = if self.active.contains_key(&window.id()) {
+        get_window_frame(window).unwrap_or(edge_rect)
+      } else {
+        edge_rect
+      };
 
       (
         Some(start_rect.clone()),
@@ -541,7 +572,14 @@ impl Animations {
 
     let animation_config = &config.value.general.animations.window_open;
 
-    let monitor = window.monitor()?;
+    // The monitor is needed to compute the frame that the window is
+    // parked at. Lift the cloak before bailing out if there's none yet,
+    // so that the window isn't left invisible.
+    let Some(monitor) = window.monitor() else {
+      self.lift_window_cloak(window);
+
+      return None;
+    };
 
     // `slide` parks the window beyond the right edge of the monitor
     // and `slide_vert` below the bottom edge so that it rises into
@@ -653,6 +691,13 @@ impl Animations {
     kind: AnimationKind,
   ) {
     let window_id = window.id();
+
+    // A window that's still waiting for its open slide loses its cloak
+    // when any other animation takes over: the reveal is only requested
+    // by the in-flight open slide, which was just replaced.
+    if kind != AnimationKind::WindowOpen {
+      self.lift_window_cloak(window);
+    }
 
     let sequence = self.next_sequence;
     self.next_sequence += 1;
@@ -771,10 +816,10 @@ impl Animations {
   ///
   /// Called when the animation worker reports that the window was parked
   /// (`AnimationUpdate::RevealCloakedWindow`), and when the window stops
-  /// being animated with the cloak still on: the open slide was skipped
-  /// or cancelled, or the window was unmanaged. The cloak must not be
-  /// left on a window, because cloaked windows can't be shown by the
-  /// regular redraw pass.
+  /// being animated with the cloak still on: the open slide was skipped,
+  /// cancelled, or replaced by another animation, or the window was
+  /// unmanaged. The cloak must not be left on a window, because cloaked
+  /// windows can't be shown by the regular redraw pass.
   pub fn lift_window_cloak(&mut self, window: &WindowContainer) {
     if !self.cloaked_for_open.remove(&window.id()) {
       return;
@@ -783,6 +828,30 @@ impl Animations {
     #[cfg(target_os = "windows")]
     if let Err(err) = window.native().set_cloaked(false) {
       tracing::warn!("Failed to lift cloak for window: {err}");
+    }
+  }
+
+  /// Confirms to the animation worker that a window's cloak was lifted,
+  /// so that the window's open slide can start.
+  ///
+  /// Sent while processing `AnimationUpdate::RevealCloakedWindow`, after
+  /// the cloak is lifted. The worker holds the slide's clock until the
+  /// confirmation, so that the slide isn't already partway through by
+  /// the time the window is visible.
+  pub fn confirm_reveal(
+    &self,
+    // LINT: `window_id` and `sequence` are only used on Windows.
+    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+    window_id: Uuid,
+    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+    sequence: u64,
+  ) {
+    #[cfg(target_os = "windows")]
+    if let Some(worker_tx) = &self.worker_tx {
+      let _ = worker_tx.send(WorkerCommand::Revealed {
+        window_id,
+        sequence,
+      });
     }
   }
 

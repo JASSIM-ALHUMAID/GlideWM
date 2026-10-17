@@ -268,7 +268,9 @@ pub enum AnimationDirection {
 ///
 /// Serialized as an array of four numbers: `[x1, y1, x2, y2]`. The start
 /// `(0, 0)` and end `(1, 1)` points are implicit. `y` values outside
-/// `0..=1` are allowed to overshoot the animation's target.
+/// `0..=1` are accepted, but window animations clamp the eased value to
+/// the animation's endpoints, since window slides are translations (an
+/// overshoot would read as a bounce).
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(try_from = "[f64; 4]", into = "[f64; 4]")]
 pub struct AnimationCurve {
@@ -279,12 +281,14 @@ pub struct AnimationCurve {
 }
 
 impl Default for AnimationCurve {
+  /// An ease-out curve (`easeOutQuint`): the value decelerates into its
+  /// target, instead of arriving in the first frames.
   fn default() -> Self {
     Self {
-      x1: 0.05,
-      y1: 0.9,
-      x2: 0.1,
-      y2: 1.05,
+      x1: 0.22,
+      y1: 1.0,
+      x2: 0.36,
+      y2: 1.0,
     }
   }
 }

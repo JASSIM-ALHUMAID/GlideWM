@@ -27,13 +27,22 @@ use super::{bezier::CubicBezier, AnimationUpdate};
 /// cloaked while it waits, so the timeout is generous.
 const PARK_CONFIRM_TIMEOUT: Duration = Duration::from_millis(1000);
 
+/// How long the worker waits for the main thread to confirm that a
+/// parked window was revealed before starting the slide without
+/// confirmation.
+///
+/// The confirmation is sent right after the cloak is lifted, which
+/// normally takes well under a frame. The timeout only bounds the
+/// damage if the main thread is overloaded.
+const REVEAL_CONFIRM_TIMEOUT: Duration = Duration::from_millis(500);
+
 /// How long an open slide frame may stay unconfirmed before the worker
 /// stops pacing on it.
 ///
 /// Without a cutoff, frames queued on a stalled window (one whose thread
 /// isn't processing position updates) would pile up and then play back
-/// as a burst. The slide continues from the current time when the wait
-/// is given up.
+/// as a burst. Giving up pauses the tween clock by the stall time, so
+/// the slide resumes from where it left off once the window catches up.
 const FRAME_STALL_LIMIT: Duration = Duration::from_millis(250);
 
 /// Request to start animating a window.
@@ -80,6 +89,17 @@ pub enum WorkerCommand {
     /// ID of the window whose animation is cancelled.
     window_id: Uuid,
   },
+
+  /// Confirms that a parked window was revealed, so that its open slide
+  /// can start its tween.
+  Revealed {
+    /// ID of the window that was revealed.
+    window_id: Uuid,
+
+    /// Sequence number of the animation that requested the reveal.
+    /// Confirmations for replaced animations are ignored.
+    sequence: u64,
+  },
 }
 
 /// An animation that the worker is applying.
@@ -113,6 +133,15 @@ enum Phase {
   Preparing {
     /// When the park frame was applied.
     applied_at: Instant,
+  },
+
+  /// The park frame landed and the window's reveal was requested from
+  /// the main thread. The tween clock doesn't start until the reveal is
+  /// confirmed (see `WorkerCommand::Revealed`), so that the slide is
+  /// visible from its first frame.
+  Revealing {
+    /// When the reveal was requested.
+    sent_at: Instant,
   },
 
   /// The tween is in flight.
@@ -257,6 +286,25 @@ fn apply_command(
     WorkerCommand::Cancel { window_id } => {
       animations.retain(|animation| animation.window_id != window_id);
     }
+    WorkerCommand::Revealed { window_id, sequence } => {
+      let Some(animation) = animations
+        .iter_mut()
+        .find(|animation| animation.window_id == window_id)
+      else {
+        return;
+      };
+
+      // Confirmations for replaced animations are ignored.
+      if animation.sequence != sequence {
+        return;
+      }
+
+      if matches!(animation.phase, Phase::Revealing { .. }) {
+        animation.phase = Phase::Running {
+          started_at: Instant::now(),
+        };
+      }
+    }
   }
 }
 
@@ -268,7 +316,7 @@ impl ActiveAnimation {
     &mut self,
     update_tx: &UnboundedSender<AnimationUpdate>,
   ) -> bool {
-    let started_at = match self.phase {
+    let mut started_at = match self.phase {
       Phase::Preparing { applied_at } => {
         // The window is parked once its frame matches `from` (the frame
         // it was parked at; off-screen for slides).
@@ -286,10 +334,29 @@ impl ActiveAnimation {
         }
 
         // The window is off-screen (or the wait was given up), so it can
-        // be revealed and the slide can start.
+        // be revealed. The tween clock doesn't start until the main
+        // thread confirms the reveal, so that the slide isn't already
+        // partway through by the time the window is actually visible.
         let _ = update_tx.send(AnimationUpdate::RevealCloakedWindow {
           window_id: self.window_id,
+          sequence: self.sequence,
         });
+
+        self.phase = Phase::Revealing {
+          sent_at: Instant::now(),
+        };
+
+        return true;
+      }
+      Phase::Revealing { sent_at } => {
+        if sent_at.elapsed() < REVEAL_CONFIRM_TIMEOUT {
+          return true;
+        }
+
+        tracing::debug!(
+          "Window reveal was not confirmed in time to start its slide: {}",
+          self.window_id
+        );
 
         let started_at = Instant::now();
         self.phase = Phase::Running { started_at };
@@ -313,6 +380,12 @@ impl ActiveAnimation {
           "Slide frame was not applied in time: {}",
           self.window_id
         );
+
+        // Pause the tween clock by the stall time, so that the slide
+        // resumes from where it left off instead of skipping ahead to
+        // the end once the app works through its queue of frames.
+        started_at += applied_at.elapsed();
+        self.phase = Phase::Running { started_at };
       }
 
       self.awaiting = None;
@@ -332,7 +405,10 @@ impl ActiveAnimation {
       return false;
     }
 
-    let eased = self.curve.ease(progress);
+    // Window slides are translations; an overshooting curve (meant for
+    // scale-style animations) would read as the window bouncing off its
+    // slot, so the eased value is clamped to the slide's endpoints.
+    let eased = self.curve.ease(progress).clamp(0.0, 1.0);
     let rect = lerp_rect(&self.from, &self.to, eased);
     apply_frame(self.handle, &rect);
 
@@ -344,14 +420,24 @@ impl ActiveAnimation {
   }
 }
 
-/// Whether the window's frame currently equals the given frame.
+/// Whether the window's frame is currently at the given frame.
 ///
 /// Position updates are queued to the window's thread, so a frame that
 /// was applied to a busy thread doesn't show up in the window's frame
-/// until the thread processes it.
+/// until the thread processes it. Each edge is allowed a small
+/// tolerance, because apps can nudge the geometry they're given (e.g.
+/// rounding sizes to DPI).
 #[cfg(target_os = "windows")]
 fn frame_matches(handle: isize, rect: &Rect) -> bool {
-  window_frame(handle).is_some_and(|frame| frame == *rect)
+  /// Maximum distance an edge may be from the applied frame.
+  const TOLERANCE_PX: i32 = 2;
+
+  window_frame(handle).is_some_and(|frame| {
+    (frame.left - rect.left).abs() <= TOLERANCE_PX
+      && (frame.top - rect.top).abs() <= TOLERANCE_PX
+      && (frame.right - rect.right).abs() <= TOLERANCE_PX
+      && (frame.bottom - rect.bottom).abs() <= TOLERANCE_PX
+  })
 }
 
 /// No-op on platforms that don't have animations.

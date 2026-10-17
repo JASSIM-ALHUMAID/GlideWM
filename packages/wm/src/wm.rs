@@ -82,8 +82,8 @@ impl WindowManager {
   ///
   /// Windows that slid out are redrawn, so that the regular redraw pass
   /// applies their final position and hides them. Windows that finished
-  /// being parked for their open slide have their cloak lifted, so that
-  /// the slide is visible.
+  /// being parked for their open slide have their cloak lifted and the
+  /// reveal confirmed to the worker, so that the slide starts visible.
   pub fn process_animation_update(
     &mut self,
     update: AnimationUpdate,
@@ -104,13 +104,17 @@ impl WindowManager {
           }
         }
       }
-      AnimationUpdate::RevealCloakedWindow { window_id } => {
+      AnimationUpdate::RevealCloakedWindow { window_id, sequence } => {
         if let Some(window) = state
           .container_by_id(window_id)
           .and_then(|container| container.as_window_container().ok())
         {
           state.animations.lift_window_cloak(&window);
         }
+
+        // Start the slide after the cloak was lifted, so that the
+        // window's first visible frame is the start of the slide.
+        state.animations.confirm_reveal(window_id, sequence);
       }
     }
 

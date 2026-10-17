@@ -16,10 +16,16 @@ pub fn unmanage_window(
   window: WindowContainer,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
-  // A window that's unmanaged while its open animation is still being
-  // prepared is cloaked. Uncloak it so that it's not left invisible
-  // after it's detached (the window stays alive, e.g. when it's hidden
-  // to the tray).
+  // Stop any animation that's in flight for the window: the worker
+  // holds the window's raw handle, which can be reused by another
+  // window once this one is gone. This also lifts the cloak of a
+  // window whose open slide was already in flight.
+  state.animations.cancel(&window);
+
+  // A window that's still waiting to be animated (its first redraw pass
+  // hasn't run) is cloaked without an active animation. Uncloak it so
+  // that it's not left invisible after it's detached (the window stays
+  // alive, e.g. when it's hidden to the tray).
   state.animations.lift_window_cloak(&window);
 
   // Create iterator of parent, grandparent, and great-grandparent.
