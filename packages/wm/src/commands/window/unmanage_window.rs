@@ -16,6 +16,12 @@ pub fn unmanage_window(
   window: WindowContainer,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
+  // A window that's unmanaged while its open animation is still being
+  // prepared is cloaked. Uncloak it so that it's not left invisible
+  // after it's detached (the window stays alive, e.g. when it's hidden
+  // to the tray).
+  state.animations.lift_window_cloak(&window);
+
   // Create iterator of parent, grandparent, and great-grandparent.
   let ancestors = window.ancestors().take(3).collect::<Vec<_>>();
 

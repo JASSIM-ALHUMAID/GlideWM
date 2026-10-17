@@ -57,9 +57,11 @@ pub fn manage_window(
   if let Some(window) = updated_window {
     info!("New window managed: {window}");
 
-    // Mark the window so that it's animated when it's first shown (if
-    // window open animations are enabled).
-    state.animations.mark_pending_open(window.id());
+    // Mark the window so that it's animated when it's first shown. The
+    // window is also cloaked here (if window open animations are
+    // enabled), so that it can't flash in place before the slide parks
+    // it off-screen.
+    state.animations.mark_pending_open(&window, config);
 
     state.emit_event(WmEvent::WindowManaged {
       managed_window: window.to_dto()?,

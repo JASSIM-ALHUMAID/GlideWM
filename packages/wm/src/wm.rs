@@ -15,7 +15,7 @@ use wm_platform::{
 };
 
 use crate::{
-  animation::{AnimationCompletion, Animations},
+  animation::{AnimationUpdate, Animations},
   commands::{
     container::{
       focus_container_by_id, focus_in_direction, set_tiling_direction,
@@ -53,7 +53,7 @@ use crate::{
 pub struct WindowManager {
   pub event_rx: mpsc::UnboundedReceiver<WmEvent>,
   pub exit_rx: mpsc::UnboundedReceiver<()>,
-  pub animation_rx: mpsc::UnboundedReceiver<AnimationCompletion>,
+  pub animation_rx: mpsc::UnboundedReceiver<AnimationUpdate>,
   pub state: WmState,
 }
 
@@ -78,23 +78,39 @@ impl WindowManager {
     })
   }
 
-  /// Applies a completion from the animation worker.
+  /// Applies an update from the animation worker.
   ///
   /// Windows that slid out are redrawn, so that the regular redraw pass
-  /// applies their final position and hides them.
-  pub fn process_animation_completion(
+  /// applies their final position and hides them. Windows that finished
+  /// being parked for their open slide have their cloak lifted, so that
+  /// the slide is visible.
+  pub fn process_animation_update(
     &mut self,
-    completion: AnimationCompletion,
+    update: AnimationUpdate,
     config: &mut UserConfig,
   ) -> anyhow::Result<()> {
     let state = &mut self.state;
 
-    if let Some(window_id) = state.animations.complete(&completion) {
-      if let Some(window) = state
-        .container_by_id(window_id)
-        .and_then(|container| container.as_window_container().ok())
-      {
-        state.pending_sync.queue_container_to_redraw(window);
+    match update {
+      AnimationUpdate::Completed { window_id, sequence } => {
+        if let Some(window_id) =
+          state.animations.complete(window_id, sequence)
+        {
+          if let Some(window) = state
+            .container_by_id(window_id)
+            .and_then(|container| container.as_window_container().ok())
+          {
+            state.pending_sync.queue_container_to_redraw(window);
+          }
+        }
+      }
+      AnimationUpdate::RevealCloakedWindow { window_id } => {
+        if let Some(window) = state
+          .container_by_id(window_id)
+          .and_then(|container| container.as_window_container().ok())
+        {
+          state.animations.lift_window_cloak(&window);
+        }
       }
     }
 

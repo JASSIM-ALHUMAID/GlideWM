@@ -3,8 +3,10 @@ use wm_common::{DisplayState, HideMethod};
 use wm_platform::NativeWindow;
 
 use crate::{
-  commands::window::unmanage_window, traits::WindowGetters,
-  user_config::UserConfig, wm_state::WmState,
+  commands::window::unmanage_window,
+  traits::{CommonGetters, WindowGetters},
+  user_config::UserConfig,
+  wm_state::WmState,
 };
 
 pub fn handle_window_hidden(
@@ -25,11 +27,20 @@ pub fn handle_window_hidden(
       return Ok(());
     }
 
+    // A window that's waiting for its open animation is cloaked by the
+    // window manager, so that it can't flash in place before the slide
+    // parks it off-screen. The hidden event that the cloak produces is
+    // not an external hide of the window (e.g. to the tray), so the
+    // window must stay managed.
+    let is_awaiting_reveal =
+      state.animations.is_awaiting_reveal(window.id());
+
     // Unmanage the window if it's not in a display state transition. Also,
     // since window events are not 100% guaranteed to be in correct order,
     // we need to ignore events where the window is not actually hidden.
-    if (config.value.general.hide_method == HideMethod::PlaceInCorner
-      || window.display_state() == DisplayState::Shown)
+    if !is_awaiting_reveal
+      && (config.value.general.hide_method == HideMethod::PlaceInCorner
+        || window.display_state() == DisplayState::Shown)
       && !window.native().is_visible().unwrap_or(false)
     {
       unmanage_window(window, state)?;

@@ -216,9 +216,9 @@ async fn start_wm(
         tracing::debug!("Received keyboard event: {:?}", event);
         wm.process_event(PlatformEvent::Keybinding(event), &mut config)
       },
-      Some(completion) = wm.animation_rx.recv() => {
-        tracing::debug!("Received animation completion: {:?}", completion);
-        wm.process_animation_completion(completion, &mut config)
+      Some(update) = wm.animation_rx.recv() => {
+        tracing::debug!("Received animation update: {:?}", update);
+        wm.process_animation_update(update, &mut config)
       }
       _ = cleanup_interval.tick() => {
         if wm.state.is_paused {
