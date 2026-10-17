@@ -7,7 +7,7 @@ use crate::{
     container::{move_container_within_tree, set_focused_descendant},
     workspace::activate_workspace,
   },
-  models::{WindowContainer, WorkspaceTarget},
+  models::{WindowContainer, Workspace, WorkspaceTarget},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -88,26 +88,12 @@ pub fn move_window_to_workspace(
       .find(|descendant| descendant.state() == WindowState::Tiling);
 
     // Insert the window into the target workspace.
-    match (window.is_tiling_window(), insertion_sibling.is_some()) {
-      (true, true) => {
-        if let Some(insertion_sibling) = insertion_sibling {
-          move_container_within_tree(
-            &window.clone().into(),
-            &insertion_sibling.clone().parent().context("No parent.")?,
-            insertion_sibling.index() + 1,
-            state,
-          )?;
-        }
-      }
-      _ => {
-        move_container_within_tree(
-          &window.clone().into(),
-          &target_workspace.clone().into(),
-          target_workspace.child_count(),
-          state,
-        )?;
-      }
-    }
+    insert_window_into_workspace(
+      &window,
+      &target_workspace,
+      insertion_sibling,
+      state,
+    )?;
 
     // When moving a focused window within the tree to another workspace,
     // the target workspace will get displayed. If moving the window e.g.
@@ -145,4 +131,172 @@ pub fn move_window_to_workspace(
   }
 
   Ok(())
+}
+
+/// Inserts the window into the target workspace.
+///
+/// When the target workspace is scrolling, tiling windows are inserted at
+/// the strip level directly after the strip item that contains
+/// `insertion_sibling` (or appended to the end of the strip if the target
+/// workspace has no tiling windows). Columns are never entered, so the
+/// window always becomes a strip item of its own.
+///
+/// Otherwise, the window is inserted into the sibling's parent at the
+/// sibling's index + 1, or appended to the workspace if there is no
+/// sibling to insert after.
+fn insert_window_into_workspace(
+  window: &WindowContainer,
+  target_workspace: &Workspace,
+  insertion_sibling: Option<WindowContainer>,
+  state: &mut WmState,
+) -> anyhow::Result<()> {
+  if window.is_tiling_window() && target_workspace.is_scrolling() {
+    let insert_index = insertion_sibling
+      .and_then(|sibling| {
+        target_workspace.strip_item_index(&sibling.into())
+      })
+      .map_or(target_workspace.child_count(), |index| index + 1);
+
+    return move_container_within_tree(
+      &window.clone().into(),
+      &target_workspace.clone().into(),
+      insert_index,
+      state,
+    );
+  }
+
+  match (window.is_tiling_window(), insertion_sibling) {
+    (true, Some(insertion_sibling)) => move_container_within_tree(
+      &window.clone().into(),
+      &insertion_sibling.clone().parent().context("No parent.")?,
+      insertion_sibling.index() + 1,
+      state,
+    ),
+    _ => move_container_within_tree(
+      &window.clone().into(),
+      &target_workspace.clone().into(),
+      target_workspace.child_count(),
+      state,
+    ),
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_common::{ScrollConfig, TilingDirection, WorkspaceLayout};
+  use wm_platform::Rect;
+
+  use super::*;
+  use crate::{
+    commands::container::attach_container,
+    models::{Monitor, SplitContainer, TilingWindow, Workspace},
+    test_utils::{
+      MOCK_MONITOR_HEIGHT, MOCK_MONITOR_WIDTH, MOCK_TASKBAR_HEIGHT,
+    },
+    traits::TilingSizeGetters,
+    user_config::UserConfig,
+    wm_state::WmState,
+  };
+
+  #[test]
+  fn inserts_strip_item_after_column_with_focused_window() {
+    // Source workspace with a single tiling window.
+    let source_workspace = Workspace::mock().call();
+    let window = TilingWindow::mock().call();
+
+    attach_container(
+      &window.clone().into(),
+      &source_workspace.clone().into(),
+      None,
+    )
+    .unwrap();
+    window.set_tiling_size(0.75);
+
+    // Target scrolling workspace with a window and a column of two
+    // windows.
+    let target_workspace = Workspace::mock()
+      .name("2".to_string())
+      .tiling_direction(TilingDirection::Horizontal)
+      .layout(WorkspaceLayout::Scrolling)
+      .scroll(ScrollConfig::default())
+      .call();
+
+    let first = TilingWindow::mock().call();
+    let top = TilingWindow::mock().call();
+    let bottom = TilingWindow::mock().call();
+
+    let column = SplitContainer::mock()
+      .tiling_direction(TilingDirection::Vertical)
+      .tiling_containers(vec![top.clone().into(), bottom.clone().into()])
+      .call();
+
+    attach_container(
+      &first.clone().into(),
+      &target_workspace.clone().into(),
+      None,
+    )
+    .unwrap();
+    attach_container(
+      &column.clone().into(),
+      &target_workspace.clone().into(),
+      None,
+    )
+    .unwrap();
+    first.set_tiling_size(0.5);
+    column.set_tiling_size(0.5);
+
+    let source_monitor = Monitor::mock()
+      .workspaces(vec![source_workspace.clone()])
+      .call();
+    let target_monitor = Monitor::mock()
+      .bounds(Rect::from_xy(
+        MOCK_MONITOR_WIDTH,
+        0,
+        MOCK_MONITOR_WIDTH,
+        MOCK_MONITOR_HEIGHT,
+      ))
+      .working_area(Rect::from_xy(
+        MOCK_MONITOR_WIDTH,
+        0,
+        MOCK_MONITOR_WIDTH,
+        MOCK_MONITOR_HEIGHT - MOCK_TASKBAR_HEIGHT,
+      ))
+      .workspaces(vec![target_workspace.clone()])
+      .call();
+
+    let mut state = WmState::mock();
+    for monitor in [source_monitor, target_monitor] {
+      attach_container(
+        &monitor.clone().into(),
+        &state.root_container.clone().into(),
+        None,
+      )
+      .unwrap();
+    }
+
+    // Focus the window inside the column of the target workspace.
+    set_focused_descendant(&bottom.clone().into(), None);
+
+    let config = UserConfig::mock();
+
+    move_window_to_workspace(
+      window.clone().into(),
+      WorkspaceTarget::Name("2".to_string()),
+      &mut state,
+      &config,
+    )
+    .unwrap();
+
+    // The window becomes a strip item directly after the column that
+    // contains the focused window.
+    let strip_item_ids = target_workspace
+      .tiling_children()
+      .map(|child| child.id())
+      .collect::<Vec<_>>();
+
+    assert_eq!(strip_item_ids, vec![first.id(), column.id(), window.id()]);
+
+    // The window's viewport fraction is preserved.
+    assert!((window.tiling_size() - 0.75).abs() < f32::EPSILON);
+  }
 }

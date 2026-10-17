@@ -69,6 +69,20 @@ pub trait TilingSizeGetters: CommonGetters {
       TilingDirection::Vertical => is_width_resize,
     };
 
+    // A top-level child of a scrolling workspace (i.e. a strip item) is
+    // resized directly along the scroll axis, regardless of whether it
+    // has siblings. Cross-axis resizes are ignored, since strip items
+    // fill the viewport cross-axis.
+    if let DirectionContainer::Workspace(workspace) = &parent {
+      if workspace.is_scrolling() {
+        return Ok(if is_inverse_resize {
+          None
+        } else {
+          Some(self.as_tiling_container()?)
+        });
+      }
+    }
+
     let container_to_resize = if is_inverse_resize {
       match parent {
         // Prevent workspaces from being resized.
@@ -120,4 +134,50 @@ macro_rules! impl_tiling_size_getters {
       }
     }
   };
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_common::{GapsConfig, ScrollConfig, TilingDirection};
+
+  use super::*;
+  use crate::test_utils::mock_scrolling_workspace;
+
+  #[test]
+  fn strip_items_resize_only_along_scroll_axis() {
+    let (_workspace, windows) = mock_scrolling_workspace(
+      TilingDirection::Horizontal,
+      2,
+      0.5,
+      &GapsConfig::default(),
+      ScrollConfig::default(),
+    );
+
+    let window = windows[0].clone();
+
+    // A resize along the scroll axis resizes the strip item itself.
+    assert_eq!(
+      window.container_to_resize(true).unwrap().unwrap().id(),
+      window.id()
+    );
+
+    // A cross-axis resize is ignored for strip items.
+    assert!(window.container_to_resize(false).unwrap().is_none());
+
+    let (_workspace, windows) = mock_scrolling_workspace(
+      TilingDirection::Vertical,
+      2,
+      0.5,
+      &GapsConfig::default(),
+      ScrollConfig::default(),
+    );
+
+    let window = windows[0].clone();
+
+    assert_eq!(
+      window.container_to_resize(false).unwrap().unwrap().id(),
+      window.id()
+    );
+    assert!(window.container_to_resize(true).unwrap().is_none());
+  }
 }

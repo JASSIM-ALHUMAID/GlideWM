@@ -249,6 +249,22 @@ impl Workspace {
     Ok(self.set_scroll_offset(new_offset))
   }
 
+  /// Gets the index of the top-level strip item that contains the given
+  /// descendant.
+  ///
+  /// Returns `None` if the container is not a descendant of this
+  /// workspace.
+  pub fn strip_item_index(&self, descendant: &Container) -> Option<usize> {
+    descendant
+      .self_and_ancestors()
+      .find(|ancestor| {
+        ancestor
+          .parent()
+          .is_some_and(|parent| parent.id() == self.id())
+      })
+      .map(|strip_item| strip_item.index())
+  }
+
   /// Effective outer gaps for this workspace.
   ///
   /// Uses `single_window_outer_gap` when the workspace has a single tiling

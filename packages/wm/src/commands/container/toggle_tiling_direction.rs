@@ -44,6 +44,18 @@ fn toggle_window_direction(
     .direction_container()
     .context("No direction container.")?;
 
+  // Toggling the direction of a window in a scrolling workspace flips the
+  // workspace's scroll axis. Wrapping the window in a split container
+  // would create an unwanted column.
+  if let DirectionContainer::Workspace(workspace) = &parent {
+    if workspace.is_scrolling() {
+      workspace
+        .set_tiling_direction(workspace.tiling_direction().inverse());
+
+      return Ok(workspace.clone().into());
+    }
+  }
+
   // If the window is an only child, then either change the tiling
   // direction of its parent workspace or flatten its parent split
   // container.
@@ -94,5 +106,60 @@ pub fn set_tiling_direction(
     Ok(())
   } else {
     toggle_tiling_direction(container, state, config)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_common::{GapsConfig, ScrollConfig};
+
+  use super::*;
+  use crate::{
+    models::{Monitor, Workspace},
+    test_utils::mock_scrolling_workspace,
+    user_config::UserConfig,
+    wm_state::WmState,
+  };
+
+  #[test]
+  fn flips_scroll_axis_of_strip_item() {
+    let (workspace, windows) = mock_scrolling_workspace(
+      TilingDirection::Horizontal,
+      2,
+      0.5,
+      &GapsConfig::default(),
+      ScrollConfig::default(),
+    );
+
+    let mut state = WmState::mock();
+    let config = UserConfig::mock();
+
+    toggle_tiling_direction(
+      windows[0].clone().into(),
+      &mut state,
+      &config,
+    )
+    .unwrap();
+
+    // The scroll axis is flipped, and the window is not wrapped in a
+    // split container.
+    assert_eq!(workspace.tiling_direction(), TilingDirection::Vertical);
+    assert_eq!(workspace.child_count(), 2);
+    assert_eq!(windows[0].parent().unwrap().id(), workspace.id());
+  }
+
+  #[test]
+  fn inverts_direction_of_tiling_workspace() {
+    let workspace = Workspace::mock().call();
+    let _monitor =
+      Monitor::mock().workspaces(vec![workspace.clone()]).call();
+
+    let mut state = WmState::mock();
+    let config = UserConfig::mock();
+
+    toggle_tiling_direction(workspace.clone().into(), &mut state, &config)
+      .unwrap();
+
+    assert_eq!(workspace.tiling_direction(), TilingDirection::Vertical);
   }
 }

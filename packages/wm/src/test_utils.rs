@@ -4,11 +4,12 @@
 //! mock builders in the model modules.
 
 use bon::bon;
+use tokio::sync::mpsc;
 use wm_common::{
   FloatingStateConfig, GapsConfig, ScrollConfig, TilingDirection,
   WindowState, WorkspaceConfig, WorkspaceLayout,
 };
-use wm_platform::{Display, NativeWindow, Rect, RectDelta};
+use wm_platform::{Dispatcher, Display, NativeWindow, Rect, RectDelta};
 
 use crate::{
   commands::container::attach_container,
@@ -18,6 +19,7 @@ use crate::{
     Workspace,
   },
   traits::TilingSizeGetters,
+  wm_state::WmState,
 };
 
 pub const MOCK_MONITOR_WIDTH: i32 = 1680;
@@ -52,8 +54,10 @@ pub fn mock_border_delta() -> RectDelta {
 /// Creates a scrolling workspace with equally-sized tiling windows,
 /// attached to a mock monitor.
 ///
-/// Window sizes are set after insertion, since `attach_container`
-/// redistributes sizes between tiling siblings while inserting.
+/// Window sizes are set explicitly after insertion: `attach_container`
+/// leaves the sizes of strip items untouched in scrolling workspaces, and
+/// they are sized as fractions of the viewport instead of being shared
+/// with their siblings.
 pub fn mock_scrolling_workspace(
   axis: TilingDirection,
   window_count: usize,
@@ -303,5 +307,19 @@ impl Workspace {
     }
 
     workspace
+  }
+}
+
+impl WmState {
+  /// Creates a mock `WmState` for use in tests.
+  ///
+  /// Calling any methods that rely on the native dispatcher is undefined
+  /// behavior and may panic.
+  #[must_use]
+  pub fn mock() -> Self {
+    let (event_tx, _) = mpsc::unbounded_channel();
+    let (exit_tx, _) = mpsc::unbounded_channel();
+
+    Self::new(Dispatcher::mock(), event_tx, exit_tx)
   }
 }

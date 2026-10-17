@@ -378,3 +378,17 @@ impl UserConfig {
     })
   }
 }
+
+#[cfg(test)]
+impl UserConfig {
+  /// Creates a mock `UserConfig` with default values, for use in tests.
+  #[must_use]
+  pub fn mock() -> Self {
+    Self {
+      path: PathBuf::new(),
+      value: ParsedConfig::default(),
+      value_str: String::new(),
+      window_rules_by_event: HashMap::new(),
+    }
+  }
+}

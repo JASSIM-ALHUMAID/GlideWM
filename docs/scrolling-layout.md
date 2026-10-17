@@ -1,6 +1,6 @@
 # Scrolling layout (Niri-style) — design & implementation plan
 
-Status: **in progress - P1–P3 implemented (config/model, core geometry, navigation & off-viewport sync)** · Branch: `feat/scrolling-layout` · Fork: `JASSIM-ALHUMAID/glazewm` (upstream: `glzr-io/glazewm`)
+Status: **in progress - P1–P4 implemented (config/model, core geometry, navigation & off-viewport sync, mutation semantics)** · Branch: `feat/scrolling-layout` · Fork: `JASSIM-ALHUMAID/glazewm` (upstream: `glzr-io/glazewm`)
 
 This document organizes the work for adding a Niri/Hyprscroller-style **scrolling
 layout** to GlazeWM. It is the working plan for this branch: model, config
@@ -179,33 +179,76 @@ order-based sibling logic navigates the strip unmodified. Covered by tests in
 
 `attach_container` + `insertion_target` (in `manage_window.rs`):
 
-- Target parent: the scrolling workspace (flat strip) — or the focused
-  column for phase-2 bundling.
-- `after_focused`: insert at `sibling.index() + 1` (existing default behavior).
-- `end`: append to workspace.
-- **Skip sibling redistribution** (existing code resizes siblings to
-  `1/(n+1)`): new child gets `window_width` from config, siblings untouched.
+- `insertion_target` returns the scrolling workspace as parent and the index
+  just after the strip item that contains the focused container
+  (`focused_strip_item_index`), so a new window always becomes its own strip
+  item — never a child of a column:
+  - `after_focused`: insert after the focused container's strip item; falls
+    back to the end of the strip if the workspace has no tiling windows.
+  - `end`: append to workspace.
+- `attach_container` **skips sibling redistribution** for a scrolling parent
+  (the usual `1/(n+1)` resize of siblings): the new child keeps its own size.
+- Default size of new windows: `create_window` sets `scroll.window_width`
+  (clamped to `[MIN_TILING_SIZE, 1.0]`) on tiling windows whose insertion
+  parent is the scrolling workspace itself (i.e. which land as strip items).
+  Windows inserted into a column get the normal attach sizing along the
+  column's axis.
+
+`move_window_to_workspace` (moving windows between workspaces, covered in
+§4.5) inserts tiling windows at the strip level after the strip item that
+contains the insertion sibling (the first tiling window of the target
+workspace), or appends to the end of the strip when it has none.
 
 ### 4.4 Resize
 
 `resize_tiling_container` / `TilingSizeGetters::container_to_resize`:
 
-- Scrolling branch: adjust **only the target's** `tiling_size` (fraction of
-  viewport), clamped to `[MIN_TILING_SIZE, 1.0]`; siblings untouched.
-- `handle_window_moved_or_resized_end.rs` (alt-drag resize): compute new
-  fraction from dragged size ÷ viewport extent; same local semantics.
+- `container_to_resize` for strip items: `Some(self)` along the scroll axis;
+  `None` for cross-axis resize requests (a strip item's cross-axis extent is
+  always the full viewport, so a cross-axis resize is a no-op).
+- `resize_tiling_container` scrolling branch: adjust **only the target's**
+  `tiling_size` (fraction of viewport), clamped to
+  `[MIN_TILING_SIZE, 1.0]`; siblings untouched.
+- Alt-drag resize (`handle_window_moved_or_resized_end.rs` →
+  `set_window_size`): a pixel length is converted to a fraction by dividing
+  by the **viewport extent** when the target's parent is a scrolling
+  workspace (instead of the parent's length); same local semantics and
+  clamp.
 
 ### 4.5 Move / reorder
 
 `move_window_in_direction.rs`:
 
-- Scrolling branch: `left`/`right` reorder within the strip (swap sibling
-  positions; no size redistribution, no split wrapping).
-- Do **not** invert workspace tiling direction (existing tail logic must be
-  guarded).
-- Moving between workspaces (`move_window_to_workspace`) keeps working; size
-  adapts on arrival (default fraction or preserved fraction — start with
-  preserved).
+- Along-axis move on a top-level strip item: reorder within the strip via
+  `move_container_within_tree` to the sibling strip item's index (positions
+  swap; works when either side is a window or a column; sizes preserved).
+- At the strip ends and for cross-axis directions: fall through to the
+  existing workspace/monitor move targets
+  (`move_to_workspace_in_direction`). The existing tail logic that inverts
+  the workspace tiling direction at the end of the tree **must not run** for
+  a scrolling workspace — guarded; the move falls through to the adjacent
+  workspace instead.
+- `flatten_child_split_containers` on a scrolling workspace: single-window
+  columns are flattened, multi-window columns preserved, and the scroll axis
+  is never inverted.
+- Moving a window **out of a column** so that it becomes a strip item of a
+  scrolling workspace — including moves into a scrolling workspace from
+  another workspace, where the preserved fraction is derived from the
+  container's *source* chain — **rescales** it so its effective viewport
+  fraction is preserved:
+  - factor = product of `tiling_size`s from the container's parent up to and
+    including its strip item (e.g. column 0.5 × window 0.5 → 0.25); `1.0`
+    (no rescale) when the target parent is not a scrolling workspace or the
+    container already is a strip item,
+  - computed **before** the move but **applied after** detach/attach, clamped
+    to `[MIN_TILING_SIZE, 1.0]`: `detach_container` redistributes the freed
+    space to the remaining siblings using the moved container's *original*
+    size, so pre-scaling would leave a gap (test: remaining column window
+    must fill to 1.0 again).
+- `move_window_to_workspace` into a scrolling workspace inserts at the strip
+  level, directly after the strip item containing the insertion sibling
+  (`strip_item_index + 1`), never into a column; size adapts on arrival via
+  the same rescale rule.
 
 ### 4.6 Layout switching & commands
 
@@ -214,7 +257,10 @@ order-based sibling logic navigates the strip unmodified. Covered by tests in
   and reset `scroll_offset` to ensure focused window visible.
 - `scroll --direction left|right [--amount 10%]` — offset-only scroll (phase 5
   nicety; not required for MVP).
-- `toggle-tiling-direction` on a scrolling workspace toggles the axis.
+- `toggle-tiling-direction` on a window whose direction container is a
+  scrolling workspace flips the workspace's scroll axis in place — the
+  window is never wrapped in a new split container to hold the inverted
+  direction.
 - Registration: `wm-common/src/app_command.rs` (`InvokeCommand`), dispatch in
   `packages/wm/src/wm.rs`, following `SetTilingDirection` exactly.
 
@@ -314,14 +360,19 @@ reviewable.
 
 | File | Change |
 | --- | --- |
-| `packages/wm/src/commands/container/attach_container.rs` | no redistribution in scrolling parent; default fraction sizing |
-| `packages/wm/src/commands/window/manage_window.rs` | `insert_position` handling |
-| `packages/wm/src/traits/tiling_size_getters.rs` | `container_to_resize` scrolling branch |
-| `packages/wm/src/commands/container/resize_tiling_container.rs` | local-only resize |
-| `packages/wm/src/commands/window/move_window_in_direction.rs` | reorder semantics; guard direction inversion |
-| `packages/wm/src/commands/container/toggle_tiling_direction.rs` | axis toggle in scrolling mode |
-| `packages/wm/src/events/handle_window_moved_or_resized_end.rs` | drag-resize → local fraction |
-| tests | attach/resize/move/close invariants |
+| `packages/wm/src/commands/container/attach_container.rs` | skip sibling redistribution when the parent is a scrolling workspace |
+| `packages/wm/src/commands/container/detach_container.rs` | skip sibling redistribution / size normalization when the parent is a scrolling workspace |
+| `packages/wm/src/commands/window/manage_window.rs` | `insert_position` handling (`focused_strip_item_index`); default `scroll.window_width` sizing in `create_window` |
+| `packages/wm/src/traits/tiling_size_getters.rs` | `container_to_resize`: `Some(self)` along the scroll axis, `None` cross-axis, for strip items |
+| `packages/wm/src/commands/container/resize_tiling_container.rs` | local-only resize of strip items, clamped to `[MIN_TILING_SIZE, 1.0]` |
+| `packages/wm/src/commands/window/set_window_size.rs` | drag-resize converts px → viewport fraction for strip items |
+| `packages/wm/src/commands/window/move_window_in_direction.rs` | strip reorder branch; cross-axis/strip-end fall-through; guard workspace direction inversion |
+| `packages/wm/src/commands/container/move_container_within_tree.rs` | rescale on strip-boundary crossings (compute before, apply after) |
+| `packages/wm/src/commands/container/toggle_tiling_direction.rs` | axis toggle in scrolling mode (no split wrapping) |
+| `packages/wm/src/commands/container/flatten_child_split_containers.rs` | preserve columns, never invert the scroll axis |
+| `packages/wm/src/commands/window/move_window_to_workspace.rs` | strip-level insert into scrolling targets |
+| `packages/wm/src/models/workspace.rs` | `strip_item_index` helper |
+| tests | attach/detach/resize/reorder/cross-axis/workspace-move rescale invariants (21 new tests) |
 
 ### P5 — commands & IPC polish
 

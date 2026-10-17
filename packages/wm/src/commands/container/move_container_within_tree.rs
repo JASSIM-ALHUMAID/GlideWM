@@ -5,7 +5,11 @@ use super::{
   attach_container, detach_container, flatten_child_split_containers,
   set_focused_descendant,
 };
-use crate::{models::Container, traits::CommonGetters, wm_state::WmState};
+use crate::{
+  models::Container,
+  traits::{CommonGetters, TilingSizeGetters, MIN_TILING_SIZE},
+  wm_state::WmState,
+};
 
 /// Move a container to a new location in the tree. This detaches the
 /// container from its current parent and attaches it to the new parent at
@@ -15,6 +19,13 @@ use crate::{models::Container, traits::CommonGetters, wm_state::WmState};
 /// detach, and the container is sized to the default tiling size with its
 /// new siblings. No changes to the container's tiling size are made if
 /// its parent stays the same.
+///
+/// Sizes are handled differently when the container is moved into a
+/// scrolling workspace: it becomes a strip item that is sized as a
+/// fraction of the viewport, and the size it had before the move is
+/// preserved. A container that is moved out of a column (i.e. a split of
+/// a scrolling workspace) is rescaled so that its fraction of the
+/// viewport is preserved (see `strip_item_rescale_factor`).
 ///
 /// This will flatten any redundant split containers after moving the
 /// container, which can cause the target parent to become detached. For
@@ -52,15 +63,50 @@ pub fn move_container_within_tree(
     return Ok(());
   }
 
+  // Compute the rescaled tiling size for a container that is moving out
+  // of a column (or other nested split) to become a strip item of a
+  // scrolling workspace. This must happen before the move: detaching the
+  // container from a non-scrolling parent redistributes the freed up
+  // space to its siblings using the container's original size.
+  let rescaled_strip_item_size =
+    match container_to_move.as_tiling_container() {
+      Ok(tiling_container) => {
+        let rescale_factor =
+          strip_item_rescale_factor(container_to_move, target_parent);
+
+        if (rescale_factor - 1.).abs() > f32::EPSILON {
+          Some(
+            (tiling_container.tiling_size() * rescale_factor)
+              .clamp(MIN_TILING_SIZE, 1.),
+          )
+        } else {
+          None
+        }
+      }
+      _ => None,
+    };
+
   // Handle case where target parent is the LCA. For example, when swapping
   // sibling containers or moving a container to a direct ancestor.
   if *target_parent == lowest_common_ancestor {
-    return move_to_lowest_common_ancestor(
+    move_to_lowest_common_ancestor(
       container_to_move,
       &lowest_common_ancestor,
       target_index,
       state,
-    );
+    )?;
+
+    // Apply the rescale after the move. Detaching and reattaching a strip
+    // item never alters its size, so this is the only place the size is
+    // set.
+    if let (Some(rescaled_size), Ok(tiling_container)) = (
+      rescaled_strip_item_size,
+      container_to_move.as_tiling_container(),
+    ) {
+      tiling_container.set_tiling_size(rescaled_size);
+    }
+
+    return Ok(());
   }
 
   // Get ancestor of `container_to_move` that is a direct child of the LCA.
@@ -127,6 +173,15 @@ pub fn move_container_within_tree(
     flatten_child_split_containers(ancestor)?;
   }
 
+  // Apply the rescale after the move. Detaching and reattaching a strip
+  // item never alters its size, so this is the only place the size is set.
+  if let (Some(rescaled_size), Ok(tiling_container)) = (
+    rescaled_strip_item_size,
+    container_to_move.as_tiling_container(),
+  ) {
+    tiling_container.set_tiling_size(rescaled_size);
+  }
+
   if container_to_move.has_focus(None) {
     state.emit_event(WmEvent::FocusedContainerMoved {
       focused_container: container_to_move.to_dto()?,
@@ -171,6 +226,73 @@ fn move_to_lowest_common_ancestor(
   }
 
   Ok(())
+}
+
+/// Gets the factor by which a container's tiling size should be rescaled
+/// when it moves out of a column (or other nested split) to become a strip
+/// item of a scrolling workspace.
+///
+/// Strip items are sized as fractions of the viewport (along the scroll
+/// axis), whereas nested containers are sized as fractions of their
+/// parent's extent. For example, a window that fills half of a column that
+/// is in turn half of the viewport ends up as a quarter of the viewport.
+///
+/// Returns `1.0` when no rescale should be applied: when the target parent
+/// is not a scrolling workspace, when the container already is a strip
+/// item, or when it is not a descendant of a scrolling workspace.
+fn strip_item_rescale_factor(
+  container_to_move: &Container,
+  target_parent: &Container,
+) -> f32 {
+  // Strip items are only sized as viewport fractions in scrolling
+  // workspaces. For any other target parent, `attach_container` sizes the
+  // container as usual.
+  let Container::Workspace(target_workspace) = target_parent else {
+    return 1.;
+  };
+
+  if !target_workspace.is_scrolling() {
+    return 1.;
+  }
+
+  // Get the top-level strip item containing the container (i.e. its
+  // ancestor that is a direct child of a scrolling workspace). This can be
+  // the container itself.
+  let strip_item =
+    container_to_move.self_and_ancestors().find(|ancestor| {
+      ancestor.parent().is_some_and(|parent| {
+        matches!(
+          &parent,
+          Container::Workspace(workspace) if workspace.is_scrolling()
+        )
+      })
+    });
+
+  let Some(strip_item) = strip_item else {
+    return 1.;
+  };
+
+  // The container is already a strip item, so its size already is a
+  // fraction of the viewport.
+  if strip_item.id() == container_to_move.id() {
+    return 1.;
+  }
+
+  // Multiply the sizes of the ancestors from the container's parent up to
+  // and including the strip item. All of these are tiling containers.
+  let mut rescale_factor = 1.;
+
+  for ancestor in container_to_move.self_and_ancestors().skip(1) {
+    if let Ok(tiling_ancestor) = ancestor.as_tiling_container() {
+      rescale_factor *= tiling_ancestor.tiling_size();
+    }
+
+    if ancestor.id() == strip_item.id() {
+      break;
+    }
+  }
+
+  rescale_factor
 }
 
 /// Gets the lowest container in the tree that has both `container_a` and

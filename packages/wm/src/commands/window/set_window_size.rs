@@ -4,7 +4,7 @@ use wm_platform::{LengthValue, Rect};
 
 use crate::{
   commands::container::resize_tiling_container,
-  models::{NonTilingWindow, TilingWindow, WindowContainer},
+  models::{Container, NonTilingWindow, TilingWindow, WindowContainer},
   traits::{
     CommonGetters, PositionGetters, TilingSizeGetters, WindowGetters,
   },
@@ -70,16 +70,28 @@ fn set_tiling_window_length(
 
   if let Some(container_to_resize) = container_to_resize {
     let parent = container_to_resize.parent().context("No parent.")?;
-    let (horizontal_gap, vertical_gap) =
-      container_to_resize.inner_gaps()?;
 
+    // The length that the target size is a fraction of. Strip items of a
+    // scrolling workspace are sized as a fraction of the viewport along
+    // the scroll axis, rather than as a share of the space alongside
+    // their siblings.
     #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-    let parent_length = if is_width_resize {
-      parent.to_rect()?.width()
-        - horizontal_gap * window.tiling_siblings().count() as i32
-    } else {
-      parent.to_rect()?.height()
-        - vertical_gap * window.tiling_siblings().count() as i32
+    let parent_length = match &parent {
+      Container::Workspace(workspace) if workspace.is_scrolling() => {
+        workspace.viewport_extent()?
+      }
+      _ => {
+        let (horizontal_gap, vertical_gap) =
+          container_to_resize.inner_gaps()?;
+
+        if is_width_resize {
+          parent.to_rect()?.width()
+            - horizontal_gap * window.tiling_siblings().count() as i32
+        } else {
+          parent.to_rect()?.height()
+            - vertical_gap * window.tiling_siblings().count() as i32
+        }
+      }
     };
 
     // Convert the target length to a tiling size.
@@ -150,4 +162,66 @@ fn set_floating_window_size(
   state.pending_sync.queue_container_to_redraw(window.clone());
 
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_common::{GapsConfig, ScrollConfig, TilingDirection};
+
+  use super::*;
+  use crate::{test_utils::mock_scrolling_workspace, wm_state::WmState};
+
+  #[test]
+  fn converts_px_to_viewport_fraction() {
+    let (workspace, windows) = mock_scrolling_workspace(
+      TilingDirection::Horizontal,
+      2,
+      0.5,
+      &GapsConfig::default(),
+      ScrollConfig::default(),
+    );
+
+    let mut state = WmState::mock();
+    let viewport_extent = workspace.viewport_extent().unwrap();
+
+    // Strip items are sized as a fraction of the viewport, so a pixel
+    // length is converted using the viewport extent rather than the space
+    // available alongside siblings.
+    set_window_size(
+      windows[0].clone().into(),
+      Some(LengthValue::from_px(viewport_extent / 4)),
+      None,
+      &mut state,
+    )
+    .unwrap();
+
+    assert!((windows[0].tiling_size() - 0.25).abs() < 0.001);
+    // The sibling is not resized.
+    assert!((windows[1].tiling_size() - 0.5).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn ignores_cross_axis_resize_of_strip_item() {
+    let (_workspace, windows) = mock_scrolling_workspace(
+      TilingDirection::Horizontal,
+      2,
+      0.5,
+      &GapsConfig::default(),
+      ScrollConfig::default(),
+    );
+
+    let mut state = WmState::mock();
+
+    set_window_size(
+      windows[0].clone().into(),
+      None,
+      Some(LengthValue::from_px(300)),
+      &mut state,
+    )
+    .unwrap();
+
+    // The window's size is unchanged, since strip items fill the viewport
+    // cross-axis.
+    assert!((windows[0].tiling_size() - 0.5).abs() < f32::EPSILON);
+  }
 }

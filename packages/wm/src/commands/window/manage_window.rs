@@ -1,6 +1,8 @@
 use anyhow::Context;
 use tracing::info;
-use wm_common::{try_warn, WindowRuleEvent, WindowState, WmEvent};
+use wm_common::{
+  try_warn, ScrollInsertPosition, WindowRuleEvent, WindowState, WmEvent,
+};
 use wm_platform::{NativeWindow, RectDelta};
 
 use crate::{
@@ -10,9 +12,12 @@ use crate::{
   },
   models::{
     Container, Monitor, NativeWindowProperties, NonTilingWindow,
-    TilingWindow, WindowContainer,
+    TilingWindow, WindowContainer, Workspace,
   },
-  traits::{CommonGetters, PositionGetters, WindowGetters},
+  traits::{
+    CommonGetters, PositionGetters, TilingSizeGetters, WindowGetters,
+    MIN_TILING_SIZE,
+  },
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -248,6 +253,24 @@ fn create_window(
     Some(target_index),
   )?;
 
+  // New tiling windows that are strip items of a scrolling workspace are
+  // sized as a fraction of the viewport, per the workspace's scroll
+  // config, rather than sharing the workspace with their siblings.
+  if window_container.state() == WindowState::Tiling {
+    if let (
+      Container::Workspace(workspace),
+      WindowContainer::TilingWindow(tiling_window),
+    ) = (&target_parent, &window_container)
+    {
+      if workspace.is_scrolling() {
+        let window_width = workspace.config().scroll.window_width;
+
+        tiling_window
+          .set_tiling_size(window_width.clamp(MIN_TILING_SIZE, 1.0));
+      }
+    }
+  }
+
   // The OS might spawn the window on a different monitor to the target
   // parent, so adjustments might need to be made because of DPI.
   if nearest_monitor
@@ -312,6 +335,11 @@ fn window_state_to_create(
 ///
 /// Rules:
 /// - For non-tiling windows: Always append to the workspace.
+/// - For tiling windows in a scrolling workspace: Always insert into the
+///   workspace as a top-level strip item (columns are only created
+///   explicitly, e.g. by dropping a window onto another). The position
+///   within the strip is given by the workspace's `insert_position` scroll
+///   config.
 /// - For tiling windows:
 ///   1. Try to insert after the focused tiling window if one exists.
 ///   2. If a non-tiling window is focused, try to insert after the first
@@ -329,9 +357,20 @@ fn insertion_target(
   let focused_workspace =
     focused_container.workspace().context("No workspace.")?;
 
-  // For tiling windows, try to find a suitable tiling window to insert
-  // next to.
   if *window_state == WindowState::Tiling {
+    if focused_workspace.is_scrolling() {
+      let insert_index =
+        match focused_workspace.config().scroll.insert_position {
+          ScrollInsertPosition::AfterFocused => focused_strip_item_index(
+            &focused_container,
+            &focused_workspace,
+          ),
+          ScrollInsertPosition::End => focused_workspace.child_count(),
+        };
+
+      return Ok((focused_workspace.into(), insert_index));
+    }
+
     let sibling = match focused_container {
       Container::TilingWindow(_) => Some(focused_container),
       _ => focused_workspace
@@ -352,4 +391,109 @@ fn insertion_target(
     focused_workspace.clone().into(),
     focused_workspace.child_count(),
   ))
+}
+
+/// Gets the index directly after the strip item that contains the focused
+/// container in a scrolling workspace.
+///
+/// Falls back to the end of the workspace if it has no tiling windows.
+fn focused_strip_item_index(
+  focused_container: &Container,
+  workspace: &Workspace,
+) -> usize {
+  let tiling_container = match focused_container {
+    // Insert after the focused tiling window.
+    Container::TilingWindow(_) => Some(focused_container.clone()),
+    // If a non-tiling window is focused, insert after the first tiling
+    // window found.
+    _ => workspace
+      .descendant_focus_order()
+      .find(Container::is_tiling_window),
+  };
+
+  tiling_container
+    .and_then(|container| workspace.strip_item_index(&container))
+    .map_or(workspace.child_count(), |index| index + 1)
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_common::{ScrollConfig, TilingDirection, WorkspaceLayout};
+
+  use super::*;
+  use crate::{
+    models::{TilingWindow, Workspace},
+    wm_state::WmState,
+  };
+
+  /// Creates a `WmState` with a displayed scrolling workspace containing
+  /// two strip items. The window at `focused_index` is focused.
+  fn mock_scrolling_state(
+    insert_position: ScrollInsertPosition,
+    focused_index: usize,
+  ) -> (WmState, Workspace, Vec<TilingWindow>) {
+    let workspace = Workspace::mock()
+      .tiling_direction(TilingDirection::Horizontal)
+      .layout(WorkspaceLayout::Scrolling)
+      .scroll(ScrollConfig {
+        insert_position,
+        ..ScrollConfig::default()
+      })
+      .call();
+
+    let windows = (0..2)
+      .map(|_| TilingWindow::mock().call())
+      .collect::<Vec<_>>();
+
+    for window in &windows {
+      attach_container(
+        &window.clone().into(),
+        &workspace.clone().into(),
+        None,
+      )
+      .unwrap();
+      window.set_tiling_size(0.5);
+    }
+
+    let monitor =
+      Monitor::mock().workspaces(vec![workspace.clone()]).call();
+
+    let state = WmState::mock();
+    attach_container(
+      &monitor.clone().into(),
+      &state.root_container.clone().into(),
+      None,
+    )
+    .unwrap();
+
+    set_focused_descendant(&windows[focused_index].clone().into(), None);
+
+    (state, workspace, windows)
+  }
+
+  #[test]
+  fn inserts_after_focused_strip_item() {
+    let (state, workspace, _windows) =
+      mock_scrolling_state(ScrollInsertPosition::AfterFocused, 0);
+
+    let (parent, index) =
+      insertion_target(&WindowState::Tiling, &state).unwrap();
+
+    // The window is inserted directly after the strip item containing the
+    // focused window.
+    assert_eq!(parent.id(), workspace.id());
+    assert_eq!(index, 1);
+  }
+
+  #[test]
+  fn appends_to_end_of_strip() {
+    let (state, workspace, _windows) =
+      mock_scrolling_state(ScrollInsertPosition::End, 1);
+
+    let (parent, index) =
+      insertion_target(&WindowState::Tiling, &state).unwrap();
+
+    assert_eq!(parent.id(), workspace.id());
+    assert_eq!(index, workspace.child_count());
+  }
 }

@@ -1,12 +1,33 @@
 use crate::{
-  models::TilingContainer,
+  models::{Container, TilingContainer},
   traits::{CommonGetters, TilingSizeGetters, MIN_TILING_SIZE},
 };
 
+/// Resizes a tiling container so that its tiling size becomes the given
+/// target size.
+///
+/// The sizes that are freed up by the resize are distributed amongst the
+/// container's tiling siblings, unless the container is a strip item of a
+/// scrolling workspace. Strip items are sized as a fraction of the
+/// viewport, independent of their siblings.
 pub fn resize_tiling_container(
   container_to_resize: &TilingContainer,
   target_size: f32,
 ) {
+  let is_scrolling_strip_item =
+    container_to_resize.parent().is_some_and(|parent| {
+      matches!(
+        parent,
+        Container::Workspace(workspace) if workspace.is_scrolling()
+      )
+    });
+
+  if is_scrolling_strip_item {
+    container_to_resize
+      .set_tiling_size(target_size.clamp(MIN_TILING_SIZE, 1.0));
+    return;
+  }
+
   let tiling_siblings =
     container_to_resize.tiling_siblings().collect::<Vec<_>>();
 
@@ -44,5 +65,71 @@ pub fn resize_tiling_container(
     let size_delta = resize_factor * size_delta;
 
     sibling.set_tiling_size(sibling.tiling_size() - size_delta);
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_common::{GapsConfig, ScrollConfig, TilingDirection};
+
+  use super::*;
+  use crate::{
+    models::{SplitContainer, TilingWindow},
+    test_utils::mock_scrolling_workspace,
+  };
+
+  #[test]
+  fn resizes_strip_item_without_affecting_siblings() {
+    let (_workspace, windows) = mock_scrolling_workspace(
+      TilingDirection::Horizontal,
+      2,
+      0.5,
+      &GapsConfig::default(),
+      ScrollConfig::default(),
+    );
+
+    resize_tiling_container(&windows[0].clone().into(), 0.25);
+
+    assert!((windows[0].tiling_size() - 0.25).abs() < f32::EPSILON);
+    assert!((windows[1].tiling_size() - 0.5).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn clamps_strip_item_size() {
+    let (_workspace, windows) = mock_scrolling_workspace(
+      TilingDirection::Horizontal,
+      1,
+      0.5,
+      &GapsConfig::default(),
+      ScrollConfig::default(),
+    );
+
+    let strip_item = windows[0].clone();
+
+    // A strip item can be at most the full viewport.
+    resize_tiling_container(&strip_item.clone().into(), 2.0);
+    assert!((strip_item.tiling_size() - 1.0).abs() < f32::EPSILON);
+
+    // A strip item cannot be resized below the minimum tiling size.
+    resize_tiling_container(&strip_item.clone().into(), 0.0);
+    assert!(
+      (strip_item.tiling_size() - MIN_TILING_SIZE).abs() < f32::EPSILON
+    );
+  }
+
+  #[test]
+  fn redistributes_among_siblings_in_tiling_split() {
+    let first = TilingWindow::mock().call();
+    let second = TilingWindow::mock().call();
+
+    let _split = SplitContainer::mock()
+      .tiling_direction(TilingDirection::Horizontal)
+      .tiling_containers(vec![first.clone().into(), second.clone().into()])
+      .call();
+
+    resize_tiling_container(&first.clone().into(), 0.25);
+
+    assert!((first.tiling_size() - 0.25).abs() < f32::EPSILON);
+    assert!((second.tiling_size() - 0.75).abs() < f32::EPSILON);
   }
 }
