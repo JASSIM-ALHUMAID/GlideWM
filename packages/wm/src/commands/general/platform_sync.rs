@@ -350,10 +350,29 @@ fn redraw_containers(
         }
       }
       Ownership::PositionOnly => {
+        // Windows that can't be moved (e.g. elevated windows, when the WM
+        // isn't allowed to move them) aren't animated, since they'd snap
+        // back once the animation ends. Their final state is applied
+        // right away instead.
         if let Err(err) =
           apply_window_frame(window, placement.window_rect(), &z_order)
         {
-          tracing::warn!("Failed to set window position: {}", err);
+          tracing::warn!(
+            "Failed to set animated window position: {}",
+            err
+          );
+          state.animations.interrupt(window.id());
+
+          if let Err(err) = reposition_window(
+            window,
+            &placement,
+            *hide_corner,
+            &z_order,
+            is_visible,
+            config,
+          ) {
+            tracing::warn!("Failed to set window position: {}", err);
+          }
         }
       }
       Ownership::Deferred => {}

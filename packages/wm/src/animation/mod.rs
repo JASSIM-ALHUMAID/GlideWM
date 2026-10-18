@@ -545,8 +545,7 @@ impl Animations {
             input.previous_display_state,
             DisplayState::Shown | DisplayState::Showing
           ),
-        scrolled_out_rect
-          .unwrap_or_else(|| window.native_properties().frame),
+        scrolled_out_rect.unwrap_or_else(|| positioned_frame(window)),
       ),
     };
 
@@ -571,6 +570,7 @@ impl Animations {
       target_rect: input.placement.rect.clone(),
       viewport: input.viewport.clone(),
       monitor_bounds: monitor.native_properties().bounds,
+      monitor_work_area: monitor.native_properties().working_area,
     })
   }
 
@@ -811,9 +811,19 @@ impl Animations {
         UpdateOutcome::default()
       }
       AnimationUpdate::Removed { .. } => {
-        let (handle, reveal_on_removal) =
-          (slot.handle, slot.reveal_on_removal);
+        let (handle, reveal_on_removal, end_visible) =
+          (slot.handle, slot.reveal_on_removal, slot.target.end_visible);
         self.slots.remove(&window_id);
+
+        // A window that was already hidden by its animation doesn't emit
+        // a hidden event when its hide completes, so the hide is
+        // finalized here.
+        if let Some(window) = window {
+          if !end_visible && window.display_state() == DisplayState::Hiding
+          {
+            window.set_display_state(DisplayState::Hidden);
+          }
+        }
 
         if reveal_on_removal {
           if let Err(err) = (self.cloak)(handle, false) {
@@ -926,6 +936,24 @@ impl Drop for Animations {
       }
     }
   }
+}
+
+/// Current frame of a window, in the coordinates that windows are
+/// positioned in (i.e. including the window's invisible borders).
+///
+/// `NativeWindowProperties::frame` is the window's visible frame, which
+/// doesn't match the placement rects that windows are positioned at.
+#[cfg(target_os = "windows")]
+fn positioned_frame(window: &WindowContainer) -> Rect {
+  wm_platform::window_frame(window.native().id().0)
+    .unwrap_or_else(|| window.native_properties().frame)
+}
+
+/// Current frame of a window. Windows are positioned at their visible
+/// frame on platforms other than Windows.
+#[cfg(not(target_os = "windows"))]
+fn positioned_frame(window: &WindowContainer) -> Rect {
+  window.native_properties().frame
 }
 
 /// Cloaks or uncloaks the window with the given handle.

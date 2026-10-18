@@ -101,15 +101,21 @@ impl WindowManager {
     let outcome = state.animations.apply_update(update, window.as_ref());
 
     if let Some(window) = window {
+      let mut needs_redraw = outcome.needs_redraw;
+
       if let Some(position) = outcome.position {
+        // Windows that can't be moved (e.g. elevated windows, when the WM
+        // isn't allowed to move them) aren't animated, since they'd snap
+        // back once the animation ends.
         if let Err(err) =
           apply_window_frame(&window, &position.rect, &position.z_order)
         {
           tracing::warn!("Failed to set animated window position: {err}");
+          needs_redraw |= state.animations.interrupt(window.id());
         }
       }
 
-      if outcome.needs_redraw {
+      if needs_redraw {
         state.pending_sync.queue_container_to_redraw(window);
       }
     }

@@ -11,9 +11,17 @@ use wm_common::{
 use wm_platform::Rect;
 
 use super::{
-  geometry::{beyond_edge, scale_about_center, SlideEdge, POPIN_SCALE},
+  geometry::{
+    beyond_edge, intersection, scale_about_center, SlideEdge, POPIN_SCALE,
+  },
   timeline::{Frame, Timing},
 };
+
+/// Distance in pixels below which a change of a window's position or size
+/// isn't animated. Such changes come from rounding (e.g. a window's
+/// shadow borders being measured after it's first positioned), and
+/// animating them would only flicker the window.
+const MIN_MOVE_DISTANCE_PX: i32 = 4;
 
 /// Role of a window in a switch of the displayed workspace on its
 /// monitor.
@@ -69,6 +77,10 @@ pub struct PlanInput {
 
   /// Bounds of the window's monitor.
   pub monitor_bounds: Rect,
+
+  /// Working area of the window's monitor (its bounds minus the taskbar
+  /// and app bars).
+  pub monitor_work_area: Rect,
 
   /// Viewport of the window's workspace, which windows scrolling into or
   /// out of view are clipped to. Defaults to the monitor bounds.
@@ -135,6 +147,27 @@ pub fn plan(input: &PlanInput, config: &AnimationsConfig) -> Option<Plan> {
   plan_move(input, config)
 }
 
+/// Rect that windows sliding onto or off the monitor are clipped to.
+///
+/// Windows are clipped to the monitor's working area, so that they pass
+/// underneath the taskbar and app bars like real windows would. A window
+/// whose own rect covers more of the monitor (e.g. a fullscreen window)
+/// is clipped to its rect instead.
+fn monitor_clip(input: &PlanInput) -> Rect {
+  let area = input.monitor_work_area.union(&input.target_rect);
+
+  intersection(&area, &input.monitor_bounds)
+    .unwrap_or_else(|| input.monitor_bounds.clone())
+}
+
+/// Whether two rects differ by more than the minimum move distance.
+fn is_moved(from: &Rect, to: &Rect) -> bool {
+  (from.left - to.left).abs() > MIN_MOVE_DISTANCE_PX
+    || (from.top - to.top).abs() > MIN_MOVE_DISTANCE_PX
+    || (from.right - to.right).abs() > MIN_MOVE_DISTANCE_PX
+    || (from.bottom - to.bottom).abs() > MIN_MOVE_DISTANCE_PX
+}
+
 /// The window open animation.
 fn plan_open(
   input: &PlanInput,
@@ -170,7 +203,7 @@ fn plan_open(
     start: Start::Hidden { from },
     target: Target {
       to: Frame::opaque(target.clone()),
-      clip: Some(input.monitor_bounds.clone()),
+      clip: Some(monitor_clip(input)),
       timing: Timing::from_config(
         open_config.duration_ms,
         &open_config.curve,
@@ -223,7 +256,7 @@ fn plan_switch(
   let timing =
     Timing::from_config(switch_config.duration_ms, &switch_config.curve);
 
-  let clip = Some(input.monitor_bounds.clone());
+  let clip = Some(monitor_clip(input));
 
   Some(if is_entering {
     Plan {
@@ -316,7 +349,7 @@ fn plan_move(
   if input.before.is_visible
     && input.after.is_visible
     && is_on_monitor
-    && input.current_rect != input.target_rect
+    && is_moved(&input.current_rect, &input.target_rect)
   {
     return Some(Plan {
       start: Start::Cover,
@@ -383,6 +416,7 @@ mod tests {
       current_rect: Rect::from_xy(0, 0, 960, 1080),
       target_rect: Rect::from_xy(0, 0, 960, 1080),
       monitor_bounds: monitor(),
+      monitor_work_area: Rect::from_xy(0, 40, 1920, 1000),
       viewport: None,
     }
   }
@@ -463,7 +497,6 @@ mod tests {
     // Forward switches slide in from the right.
     assert!(from.rect.left >= monitor().right);
     assert!(plan.target.end_visible);
-    assert_eq!(plan.target.clip, Some(monitor()));
   }
 
   #[test]
@@ -532,6 +565,52 @@ mod tests {
       Frame::opaque(Rect::from_xy(960, 0, 960, 1080))
     );
     assert!(plan.target.end_visible);
+  }
+
+  #[test]
+  fn ignores_tiny_moves() {
+    assert!(plan(
+      &PlanInput {
+        target_rect: Rect::from_xy(2, 0, 956, 1078),
+        ..input()
+      },
+      &config(),
+    )
+    .is_none());
+  }
+
+  #[test]
+  fn clips_slides_to_work_area() {
+    let plan = plan(
+      &PlanInput {
+        switch_role: Some(SwitchRole::Entering { is_forward: true }),
+        before: hidden(),
+        target_rect: Rect::from_xy(0, 40, 960, 1000),
+        ..input()
+      },
+      &config(),
+    )
+    .unwrap();
+
+    // Tiled windows slide underneath the bar above the work area.
+    assert_eq!(plan.target.clip, Some(Rect::from_xy(0, 40, 1920, 1000)));
+
+    // Fullscreen windows cover the whole monitor while sliding.
+    let plan = plan_fullscreen_switch();
+    assert_eq!(plan.target.clip, Some(monitor()));
+  }
+
+  fn plan_fullscreen_switch() -> Plan {
+    plan(
+      &PlanInput {
+        switch_role: Some(SwitchRole::Entering { is_forward: true }),
+        before: hidden(),
+        target_rect: monitor(),
+        ..input()
+      },
+      &config(),
+    )
+    .unwrap()
   }
 
   #[test]
