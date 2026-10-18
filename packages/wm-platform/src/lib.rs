@@ -2,7 +2,6 @@
 #![allow(clippy::missing_errors_doc)]
 #![feature(iterator_try_collect)]
 
-mod animation;
 mod dispatcher;
 mod display;
 mod display_listener;
@@ -16,12 +15,12 @@ mod platform_event;
 mod platform_impl;
 mod single_instance;
 mod thread_bound;
+mod thumbnail_overlay;
 mod window_listener;
 
 #[cfg(feature = "test_utils")]
 pub mod test_utils;
 
-pub use animation::*;
 pub use dispatcher::*;
 pub use display::*;
 pub use display_listener::*;
@@ -34,6 +33,7 @@ pub use native_window::*;
 pub use platform_event::*;
 pub use single_instance::*;
 pub use thread_bound::*;
+pub use thumbnail_overlay::*;
 pub use window_listener::*;
 // TODO: Avoid exposing `windows` crate types in the public API.
 #[cfg(target_os = "windows")]

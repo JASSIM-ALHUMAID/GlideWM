@@ -166,6 +166,11 @@ impl NativeWindow {
     unsafe { IsWindow(self.hwnd()) }.as_bool()
   }
 
+  /// Implements [`NativeWindowWindowsExt::has_visible_style`].
+  pub(crate) fn has_visible_style(&self) -> bool {
+    unsafe { IsWindowVisible(self.hwnd()) }.as_bool()
+  }
+
   /// Implements [`NativeWindow::is_visible`].
   pub(crate) fn is_visible(&self) -> crate::Result<bool> {
     let is_visible = unsafe { IsWindowVisible(self.hwnd()) }.as_bool();
@@ -719,7 +724,7 @@ impl NativeWindow {
   /// be present even if the window isn't actually visible. The
   /// `DWMWA_CLOAKED` attribute is used to check whether these apps are
   /// visible.
-  fn is_cloaked(&self) -> crate::Result<bool> {
+  pub(crate) fn is_cloaked(&self) -> crate::Result<bool> {
     let mut cloaked = 0u32;
 
     unsafe {

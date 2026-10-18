@@ -14,6 +14,7 @@ mod native_window;
 mod platform_event;
 mod platform_impl;
 mod thread_bound;
+mod thumbnail_overlay;
 mod window_listener;
 
 pub use dispatcher::*;
@@ -26,6 +27,7 @@ pub use mouse_listener::*;
 pub use native_window::*;
 pub use platform_event::*;
 pub use thread_bound::*;
+pub use thumbnail_overlay::*;
 pub use window_listener::*;
 
 pub fn main() {

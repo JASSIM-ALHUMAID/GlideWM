@@ -1,57 +1,49 @@
-//! Animations for window positions.
+//! Window animations.
 //!
-//! Animations are applied by a worker thread that repositions windows on
-//! every composition frame. The main thread keeps computing the final
-//! state of every window as usual, with two exceptions:
+//! Windows are animated via live compositor thumbnails rather than by
+//! moving the real windows frame by frame: an animated window is hidden
+//! (cloaked) and moved to its final position in one step, while a worker
+//! thread animates the window's thumbnail on a click-through overlay
+//! (see `worker` for the protocol). Once the animation ends, the window
+//! is shown again underneath its thumbnail and the thumbnail is removed.
 //!
-//! - Windows that are being animated aren't repositioned by the regular
-//!   redraw pass (`platform_sync`). Windows that are sliding out are
-//!   hidden once their animation completes.
-//! - Move events triggered by the animation frames are ignored, so that
-//!   they aren't mistaken for user-initiated moves.
+//! This keeps animations smooth regardless of how fast applications
+//! process position updates, and real windows never visibly jump.
 //!
-//! The engine currently handles sliding windows when the displayed
-//! workspace changes, and sliding windows in when they're first shown.
+//! The main thread (this module) decides which windows are animated
+//! during the redraw pass (see `planner`), and is the only writer of the
+//! cloak state of windows that it animates.
+//!
+//! Animations require the `cloak` hide method: windows hidden by other
+//! methods aren't drawn by the compositor, so they have no thumbnail to
+//! animate.
 
 mod bezier;
+mod geometry;
+mod planner;
+mod timeline;
 mod worker;
 
-use std::{
-  collections::{HashMap, HashSet},
-  time::{Duration, Instant},
-};
+use std::collections::{HashMap, HashSet};
 
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use uuid::Uuid;
 use wm_common::{
-  AnimationDirection, DisplayState, WindowOpenAnimationStyle, WindowState,
-  WorkspaceSwitchAnimationStyle,
+  DisplayState, HideMethod, WindowOpenAnimationStyle, WindowState,
 };
-#[cfg(target_os = "windows")]
-use wm_platform::NativeWindowWindowsExt;
-use wm_platform::{Direction, Rect};
+use wm_platform::{Rect, WindowId, WindowZOrder};
 
+use self::{
+  planner::{PlanInput, Start, SwitchRole, Target, Visibility},
+  timeline::{Frame, Timing},
+  worker::{BeginRequest, StartFrame, WorkerCommand},
+};
 use crate::{
   layouts::WindowPlacement,
   models::{Monitor, WindowContainer},
   traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
 };
-
-use self::{
-  bezier::CubicBezier,
-  worker::{StartRequest, WorkerCommand},
-};
-
-/// Distance in pixels that a window slides beyond the monitor's edge, so
-/// that the window (including its shadow) is fully off-screen at the
-/// start/end of a slide.
-const SLIDE_MARGIN_PX: i32 = 64;
-
-/// Duration that move events are ignored for after an animation
-/// completed. The OS can deliver move events for the last animation
-/// frames after the animation already completed.
-const POST_ANIMATION_GRACE: Duration = Duration::from_millis(200);
 
 /// A switch of the displayed workspace on a monitor.
 #[derive(Clone, Copy, Debug)]
@@ -66,196 +58,147 @@ pub struct WorkspaceSwitch {
   is_forward: bool,
 }
 
-/// Animation to apply for a window during the redraw pass.
-#[derive(Debug)]
-pub enum WindowAnimation {
-  /// Window slides in from beyond an edge of its monitor. The caller is
-  /// expected to position the window at `start_rect` and make it
-  /// visible; the worker animates it to its final position. A window
-  /// that's cloaked until its open slide is parked is revealed by the
-  /// worker instead (see `AnimationUpdate::RevealCloakedWindow`).
-  SlideIn {
-    /// Frame to position the window at before the animation starts.
-    start_rect: Rect,
-  },
-
-  /// Window slides out beyond an edge of its monitor and is hidden once
-  /// the animation completes.
-  SlideOut,
-}
-
-/// What an animated window is being animated for.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum AnimationKind {
-  /// Window slides in when its workspace becomes displayed.
-  SlideIn,
-
-  /// Window slides out when its workspace stops being displayed.
-  SlideOut,
-
-  /// Window slides in when it's first shown (e.g. an application
-  /// launching).
-  WindowOpen,
-}
-
-/// State of an animation that's in flight.
-#[derive(Debug)]
-struct ActiveAnimation {
-  /// Sequence number of the animation. Completions for a different
-  /// sequence number belong to a replaced animation and are ignored.
-  sequence: u64,
-
-  kind: AnimationKind,
-
-  /// Frame that the animation is tweening the window towards.
-  target: Rect,
-}
-
-/// Update emitted by the animation worker for the main thread to apply.
-#[derive(Clone, Copy, Debug)]
+/// Update emitted by the animation worker for the main thread to apply
+/// (see `Animations::apply_update`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnimationUpdate {
-  /// A window animation completed.
-  Completed {
-    /// ID of the animated window.
-    window_id: Uuid,
+  /// The thumbnail covers the visible window, so the window can be
+  /// hidden and moved to its final position.
+  Covered { window_id: Uuid, sequence: u64 },
 
-    /// Sequence number of the completed animation.
-    sequence: u64,
-  },
+  /// The animation ended with the window visible, so the window can be
+  /// shown underneath its thumbnail.
+  Finished { window_id: Uuid, sequence: u64 },
 
-  /// The worker parked a window that's sliding in for the first time
-  /// (`AnimationKind::WindowOpen`). The cloak that hid the window while
-  /// it was waiting to be parked can be lifted now.
-  ///
-  /// The cloak must be lifted on the main thread, because cloaking uses
-  /// shell COM objects. The main thread confirms the reveal once the
-  /// cloak is lifted (see `Animations::confirm_reveal`), which starts
-  /// the window's slide.
-  RevealCloakedWindow {
-    /// ID of the window to reveal.
-    window_id: Uuid,
+  /// The animation is over and its thumbnail was removed.
+  Removed { window_id: Uuid, sequence: u64 },
 
-    /// Sequence number of the animation that requested the reveal.
-    sequence: u64,
-  },
+  /// The animation couldn't continue and its thumbnail was removed. The
+  /// window's final state must be applied without animating it.
+  Aborted { window_id: Uuid, sequence: u64 },
 }
 
-/// Edge of a monitor that windows slide in from.
-#[derive(Clone, Copy, Debug)]
-enum SlideEdge {
-  Left,
-  Right,
-  Top,
-  Bottom,
-}
-
-impl SlideEdge {
-  /// Resolves the edge that the incoming workspace slides in from for
-  /// the given animation style and configured direction.
-  ///
-  /// `is_forward` is whether the switch moved forward in the monitor's
-  /// workspace order (e.g. focused the next workspace).
-  fn for_switch(
-    style: WorkspaceSwitchAnimationStyle,
-    direction: AnimationDirection,
-    is_forward: bool,
-  ) -> Self {
-    // The vertical style (`slide_vert`) slides along the y-axis and the
-    // horizontal style (`slide`) slides along the x-axis. Directions
-    // that don't match the style's axis are treated as `auto`.
-    match style {
-      WorkspaceSwitchAnimationStyle::SlideVert => match direction {
-        AnimationDirection::Up => Self::Bottom,
-        AnimationDirection::Down => Self::Top,
-        AnimationDirection::Auto
-        | AnimationDirection::Left
-        | AnimationDirection::Right => {
-          if is_forward {
-            Self::Bottom
-          } else {
-            Self::Top
-          }
-        }
-      },
-      WorkspaceSwitchAnimationStyle::Slide
-      | WorkspaceSwitchAnimationStyle::None => match direction {
-        AnimationDirection::Left => Self::Left,
-        AnimationDirection::Right => Self::Right,
-        AnimationDirection::Auto
-        | AnimationDirection::Up
-        | AnimationDirection::Down => {
-          if is_forward {
-            Self::Right
-          } else {
-            Self::Left
-          }
-        }
-      },
-    }
-  }
-
-  /// Edge that the outgoing workspace slides out through. Windows travel
-  /// in the same direction during a switch, so the outgoing workspace
-  /// leaves through the opposite edge.
-  fn opposite(self) -> Self {
+impl AnimationUpdate {
+  /// ID of the animated window.
+  #[must_use]
+  pub fn window_id(&self) -> Uuid {
     match self {
-      Self::Left => Self::Right,
-      Self::Right => Self::Left,
-      Self::Top => Self::Bottom,
-      Self::Bottom => Self::Top,
+      Self::Covered { window_id, .. }
+      | Self::Finished { window_id, .. }
+      | Self::Removed { window_id, .. }
+      | Self::Aborted { window_id, .. } => *window_id,
     }
   }
 
-  fn to_direction(self) -> Direction {
+  /// Sequence number of the animation.
+  fn sequence(&self) -> u64 {
     match self {
-      Self::Left => Direction::Left,
-      Self::Right => Direction::Right,
-      Self::Top => Direction::Up,
-      Self::Bottom => Direction::Down,
+      Self::Covered { sequence, .. }
+      | Self::Finished { sequence, .. }
+      | Self::Removed { sequence, .. }
+      | Self::Aborted { sequence, .. } => *sequence,
     }
   }
 }
 
-/// Gets the current frame of a window from the OS.
-///
-/// Used to retarget a slide from where the window currently is, instead
-/// of from where it was originally planned to start.
-#[cfg(target_os = "windows")]
-fn get_window_frame(window: &WindowContainer) -> Option<Rect> {
-  wm_platform::window_frame(window.native().id().0)
+/// How the redraw pass handles a window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ownership {
+  /// The window isn't animated: the redraw pass positions it and applies
+  /// its visibility as usual.
+  None,
+
+  /// The window is animated and hidden: the redraw pass positions it,
+  /// but leaves its visibility to the animation.
+  PositionOnly,
+
+  /// The window is animated and still visible: it's positioned once its
+  /// thumbnail covers it (see `AnimationUpdate::Covered`). The redraw
+  /// pass leaves it alone.
+  Deferred,
 }
 
-/// Always `None` on platforms without window animations.
-#[cfg(not(target_os = "windows"))]
-fn get_window_frame(_window: &WindowContainer) -> Option<Rect> {
-  None
+/// Position to apply to a window once its thumbnail covers it.
+#[derive(Clone, Debug)]
+pub struct DeferredPosition {
+  pub rect: Rect,
+  pub z_order: WindowZOrder,
+}
+
+/// What the caller of `Animations::apply_update` needs to do.
+#[derive(Debug, Default)]
+pub struct UpdateOutcome {
+  /// Position to apply to the window.
+  pub position: Option<DeferredPosition>,
+
+  /// Whether the window needs to be redrawn (e.g. to apply its final
+  /// state after an aborted animation).
+  pub needs_redraw: bool,
+}
+
+/// A window's transition during a redraw pass.
+pub struct RedrawInput<'a> {
+  pub placement: &'a WindowPlacement,
+  pub previous_display_state: &'a DisplayState,
+  pub switches: &'a HashMap<Uuid, WorkspaceSwitch>,
+  pub z_order: &'a WindowZOrder,
+}
+
+/// Phase of an animation, as seen by the main thread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SlotPhase {
+  /// Waiting for the thumbnail to cover the visible window.
+  Covering,
+
+  /// The window is hidden and its thumbnail is animating.
+  Running,
+
+  /// The window was shown again; waiting for its thumbnail to be
+  /// removed.
+  Revealing,
+}
+
+/// An animation in flight, as seen by the main thread.
+#[derive(Debug)]
+struct Slot {
+  sequence: u64,
+  handle: WindowId,
+  phase: SlotPhase,
+  target: Target,
+
+  /// Position to apply once the thumbnail covers the window.
+  deferred_position: Option<DeferredPosition>,
 }
 
 /// Animation state managed on the main thread.
 pub struct Animations {
-  /// Animations that are in flight, keyed by window ID.
-  active: HashMap<Uuid, ActiveAnimation>,
+  /// Animations in flight, keyed by window ID.
+  slots: HashMap<Uuid, Slot>,
 
-  /// Windows to animate when they're first shown, populated when a
-  /// window is managed. Used for the window open animation.
+  /// Windows that are animated when they're first shown, populated when
+  /// a window is managed.
   pending_open: HashSet<Uuid>,
 
-  /// Windows that are currently cloaked for their open animation.
-  ///
-  /// A window that's going to slide in when it's first shown is cloaked
-  /// as soon as it's managed, so that it can't flash in place before the
-  /// animation parks it off-screen. The cloak is lifted once the window
-  /// is parked (reported by the animation worker), or when the window
-  /// stops being animated (e.g. its open slide is skipped or cancelled).
-  cloaked_for_open: HashSet<Uuid>,
+  /// Windows that were cloaked when they were managed, so that they
+  /// can't flash in place before their open animation starts. Keyed by
+  /// window ID.
+  cloaked_for_open: HashMap<Uuid, WindowId>,
+
+  /// Windows that were scrolled out of the viewport of their workspace
+  /// as of their last redraw.
+  scrolled_out: HashSet<Uuid>,
+
+  /// Windows whose next redraw must not be animated (e.g. after an
+  /// aborted animation).
+  suppressed: HashSet<Uuid>,
 
   /// The displayed workspace of each monitor as of the last sync pass.
   /// Used to detect workspace switches.
   displayed_workspaces: HashMap<Uuid, Uuid>,
 
-  /// Timestamps of animations that recently completed or were cancelled,
-  /// keyed by window ID.
-  recently_finished: HashMap<Uuid, Instant>,
+  /// Whether the current sync pass is the first one. Windows that exist
+  /// when the WM starts are tiled without animating them.
+  is_initial_pass: bool,
 
   /// Sequence number for the next animation.
   next_sequence: u64,
@@ -263,13 +206,20 @@ pub struct Animations {
   /// Command sender for the animation worker. `None` if animations aren't
   /// supported on this platform or the worker failed to start.
   worker_tx: Option<UnboundedSender<WorkerCommand>>,
+
+  /// Cloaks or uncloaks a window. Replaced in tests.
+  cloak: CloakFn,
 }
+
+/// Function that cloaks (`true`) or uncloaks (`false`) a window.
+type CloakFn = fn(WindowId, bool) -> anyhow::Result<()>;
 
 impl Animations {
   /// Creates the animation engine, along with the receiver for updates
   /// from the animation worker.
   ///
-  /// Updates must be applied via `WindowManager::process_animation_update`.
+  /// Updates must be applied via
+  /// `WindowManager::process_animation_update`.
   #[must_use]
   pub fn new() -> (Self, UnboundedReceiver<AnimationUpdate>) {
     let (update_tx, update_rx) = mpsc::unbounded_channel();
@@ -293,20 +243,40 @@ impl Animations {
   #[must_use]
   pub fn disabled() -> Self {
     Self {
-      active: HashMap::new(),
+      slots: HashMap::new(),
       pending_open: HashSet::new(),
-      cloaked_for_open: HashSet::new(),
+      cloaked_for_open: HashMap::new(),
+      scrolled_out: HashSet::new(),
+      suppressed: HashSet::new(),
       displayed_workspaces: HashMap::new(),
-      recently_finished: HashMap::new(),
+      is_initial_pass: true,
       next_sequence: 0,
       worker_tx: None,
+      cloak: set_cloaked,
     }
   }
 
-  /// Whether animations are enabled in the config and supported on this
-  /// platform.
+  /// Whether animations are enabled in the config and supported with the
+  /// current config and platform.
   fn is_available(&self, config: &UserConfig) -> bool {
-    self.worker_tx.is_some() && config.value.general.animations.enabled
+    self.worker_tx.is_some()
+      && config.value.general.animations.enabled
+      && config.value.general.hide_method == HideMethod::Cloak
+  }
+
+  /// Logs a warning if animations are enabled in the config, but can't
+  /// be used with it.
+  pub fn warn_if_unsupported(config: &UserConfig) {
+    let general = &config.value.general;
+
+    if general.animations.enabled
+      && general.hide_method != HideMethod::Cloak
+    {
+      tracing::warn!(
+        "Window animations require `general.hide_method: 'cloak'` and \
+         are disabled."
+      );
+    }
   }
 
   /// Marks a window to be animated when it's first shown. Used for the
@@ -317,50 +287,41 @@ impl Animations {
   pub fn mark_pending_open(
     &mut self,
     window: &WindowContainer,
-    // LINT: `config` is only used on Windows.
-    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
     config: &UserConfig,
   ) {
     if self.displayed_workspaces.is_empty() {
       return;
     }
 
-    self.pending_open.insert(window.id());
+    let open_config = &config.value.general.animations.window_open;
 
-    #[cfg(target_os = "windows")]
-    self.cloak_for_open(window, config);
-  }
-
-  /// Cloaks a newly managed window until its open animation parks it
-  /// off-screen, so that the window can't flash in place before the
-  /// slide starts.
-  ///
-  /// Only windows that are going to slide in are cloaked. The cloak is
-  /// lifted once the animation worker reports that the window is parked
-  /// (`AnimationUpdate::RevealCloakedWindow`), or when the window stops
-  /// being animated with the cloak still on (see `lift_window_cloak`).
-  #[cfg(target_os = "windows")]
-  fn cloak_for_open(&mut self, window: &WindowContainer, config: &UserConfig) {
-    let animation_config = &config.value.general.animations.window_open;
-
-    let will_slide_in = self.is_available(config)
+    // Apps are allowed to ignore position updates while fullscreen (e.g.
+    // games), so fullscreen windows aren't animated on open.
+    let will_animate = self.is_available(config)
       && !matches!(
         window.state(),
         WindowState::Minimized | WindowState::Fullscreen(_)
       )
-      && animation_config.style != WindowOpenAnimationStyle::None
-      && animation_config.duration_ms > 0;
+      && open_config.style != WindowOpenAnimationStyle::None
+      && open_config.duration_ms > 0;
 
-    if !will_slide_in {
+    if !will_animate {
       return;
     }
 
-    if let Err(err) = window.native().set_cloaked(true) {
-      tracing::warn!("Failed to cloak window for its open animation: {err}");
+    // Cloak the window until its open animation starts, so that it can't
+    // flash in place in the meantime.
+    if let Err(err) = (self.cloak)(window.native().id(), true) {
+      tracing::warn!(
+        "Failed to cloak window for its open animation: {err}"
+      );
       return;
     }
 
-    self.cloaked_for_open.insert(window.id());
+    self.pending_open.insert(window.id());
+    self
+      .cloaked_for_open
+      .insert(window.id(), window.native().id());
   }
 
   /// Detects workspace switches on each monitor and records the
@@ -372,9 +333,7 @@ impl Animations {
     &mut self,
     monitors: &[Monitor],
   ) -> HashMap<Uuid, WorkspaceSwitch> {
-    self
-      .recently_finished
-      .retain(|_, finished_at| finished_at.elapsed() < POST_ANIMATION_GRACE);
+    self.is_initial_pass = self.displayed_workspaces.is_empty();
 
     let mut switches = HashMap::new();
 
@@ -385,9 +344,8 @@ impl Animations {
 
       let workspace_id = workspace.id();
 
-      let previous_id = self
-        .displayed_workspaces
-        .insert(monitor.id(), workspace_id);
+      let previous_id =
+        self.displayed_workspaces.insert(monitor.id(), workspace_id);
 
       let Some(previous_id) = previous_id.filter(|id| *id != workspace_id)
       else {
@@ -426,518 +384,781 @@ impl Animations {
     switches
   }
 
-  /// Plans an animation for a window that's entering or leaving the
-  /// displayed workspace of its monitor.
+  /// Decides how a window is animated during the redraw pass, and starts
+  /// or redirects its animation accordingly.
   ///
-  /// Returns the animation to apply during the redraw pass, or `None` if
-  /// the window shouldn't be animated.
-  pub fn plan_switch_animation(
+  /// Must be called for every redrawn window, after its display state
+  /// transitioned. Returns how the redraw pass must handle the window.
+  pub fn plan_redraw(
     &mut self,
     window: &WindowContainer,
-    previous_display_state: &DisplayState,
-    switches: &HashMap<Uuid, WorkspaceSwitch>,
-    placement: &WindowPlacement,
+    input: &RedrawInput,
     config: &UserConfig,
-  ) -> Option<WindowAnimation> {
-    let animation_config = &config.value.general.animations.workspace_switch;
-
-    if !self.is_available(config)
-      || animation_config.style == WorkspaceSwitchAnimationStyle::None
-      || animation_config.duration_ms == 0
-      || !Self::is_animatable_window(window, placement)
-    {
-      return None;
-    }
-
-    let (Some(workspace), Some(monitor)) =
-      (window.workspace(), window.monitor())
-    else {
-      return None;
-    };
-
-    let switch = switches.get(&monitor.id())?;
-
-    let display_state = window.display_state();
-
-    let is_entering = workspace.id() == switch.to
-      && matches!(
-        previous_display_state,
-        DisplayState::Hidden | DisplayState::Hiding
-      )
-      && matches!(display_state, DisplayState::Showing);
-
-    let is_leaving = workspace.id() == switch.from
-      && matches!(
-        previous_display_state,
-        DisplayState::Shown | DisplayState::Showing
-      )
-      && matches!(display_state, DisplayState::Hiding);
-
-    if !is_entering && !is_leaving {
-      return None;
-    }
-
-    let slide_edge = SlideEdge::for_switch(
-      animation_config.style,
-      animation_config.direction,
-      switch.is_forward,
-    );
-
-    // The window is parked a margin beyond the monitor edge, so that
-    // it's fully off-screen at the start/end of the slide.
-    let monitor_bounds = monitor.native_properties().bounds;
-
-    let edge_length = match slide_edge {
-      SlideEdge::Left | SlideEdge::Right => monitor_bounds.width(),
-      SlideEdge::Top | SlideEdge::Bottom => monitor_bounds.height(),
-    };
-
-    let slide_distance = edge_length + SLIDE_MARGIN_PX;
-
-    let (from_rect, to_rect, kind, animation) = if is_entering {
-      let edge_rect = placement.rect.translate_in_direction(
-        &slide_edge.to_direction(),
-        slide_distance,
-      );
-
-      // A window that's already mid-slide (e.g. its workspace was
-      // switched away from and back before the slide finished) resumes
-      // from its current frame, instead of snapping back to the edge.
-      let start_rect = if self.active.contains_key(&window.id()) {
-        get_window_frame(window).unwrap_or(edge_rect)
-      } else {
-        edge_rect
-      };
-
-      (
-        Some(start_rect.clone()),
-        placement.rect.clone(),
-        AnimationKind::SlideIn,
-        WindowAnimation::SlideIn { start_rect },
-      )
-    } else {
-      let end_rect = placement.rect.translate_in_direction(
-        &slide_edge.opposite().to_direction(),
-        slide_distance,
-      );
-
-      (
-        None,
-        end_rect,
-        AnimationKind::SlideOut,
-        WindowAnimation::SlideOut,
-      )
-    };
-
-    self.start_animation(
-      window,
-      from_rect,
-      to_rect,
-      Duration::from_millis(u64::from(animation_config.duration_ms)),
-      CubicBezier::from(&animation_config.curve),
-      kind,
-    );
-
-    Some(animation)
-  }
-
-  /// Plans an animation for a window that's being shown for the first
-  /// time (e.g. an application that's launched).
-  ///
-  /// Returns the animation to apply during the redraw pass, or `None` if
-  /// the window shouldn't be animated.
-  pub fn plan_window_open(
-    &mut self,
-    window: &WindowContainer,
-    placement: &WindowPlacement,
-    config: &UserConfig,
-  ) -> Option<WindowAnimation> {
-    // The flag is consumed on the first redraw pass the window goes
-    // through, so that a window that isn't actually shown during this
-    // pass (e.g. it's on a workspace that isn't displayed) doesn't get
-    // animated later.
-    if !self.pending_open.remove(&window.id()) {
-      return None;
-    }
-
-    if let Some(reason) =
-      self.open_slide_skip_reason(window, placement, config)
-    {
-      tracing::debug!("Not animating window open for {window}: {reason}");
-
-      // The window was cloaked when it was managed, in case it would
-      // slide in. It won't, so lift the cloak before the regular redraw
-      // pass positions the window.
-      self.lift_window_cloak(window);
-
-      return None;
-    }
-
-    let animation_config = &config.value.general.animations.window_open;
-
-    // The monitor is needed to compute the frame that the window is
-    // parked at. Lift the cloak before bailing out if there's none yet,
-    // so that the window isn't left invisible.
-    let Some(monitor) = window.monitor() else {
-      self.lift_window_cloak(window);
-
-      return None;
-    };
-
-    // `slide` parks the window beyond the right edge of the monitor
-    // and `slide_vert` below the bottom edge so that it rises into
-    // place. The window is parked a margin beyond the edge, so that
-    // it's fully off-screen at the start of the slide. (`none` was
-    // filtered out above, in `open_slide_skip_reason`.)
-    let slide_edge = match animation_config.style {
-      WindowOpenAnimationStyle::SlideVert => SlideEdge::Bottom,
-      WindowOpenAnimationStyle::Slide
-      | WindowOpenAnimationStyle::None => SlideEdge::Right,
-    };
-
-    let monitor_bounds = monitor.native_properties().bounds;
-
-    let slide_distance = match slide_edge {
-      SlideEdge::Left | SlideEdge::Right => monitor_bounds.width(),
-      SlideEdge::Top | SlideEdge::Bottom => monitor_bounds.height(),
-    } + SLIDE_MARGIN_PX;
-
-    let start_rect = placement
-      .rect
-      .translate_in_direction(&slide_edge.to_direction(), slide_distance);
-
-    tracing::debug!("Animating window open for {window}");
-
-    self.start_animation(
-      window,
-      Some(start_rect.clone()),
-      placement.rect.clone(),
-      Duration::from_millis(u64::from(animation_config.duration_ms)),
-      CubicBezier::from(&animation_config.curve),
-      AnimationKind::WindowOpen,
-    );
-
-    Some(WindowAnimation::SlideIn { start_rect })
-  }
-
-  /// Why a newly opened window shouldn't get an open slide, if any.
-  ///
-  /// The `pending_open` flag is consumed regardless of the outcome, so a
-  /// window that isn't animated on its first redraw pass is never
-  /// animated later.
-  fn open_slide_skip_reason(
-    &self,
-    window: &WindowContainer,
-    placement: &WindowPlacement,
-    config: &UserConfig,
-  ) -> Option<&'static str> {
-    let animation_config = &config.value.general.animations.window_open;
-
-    if !self.is_available(config) {
-      return Some("animations are unavailable");
-    }
-
-    if animation_config.style == WindowOpenAnimationStyle::None {
-      return Some("window open animations are disabled in config");
-    }
-
-    if animation_config.duration_ms == 0 {
-      return Some("window open animation duration is zero");
-    }
-
-    // Apps are allowed to ignore position updates while fullscreen, so
-    // the window could sit parked off-screen (and cloaked) until the
-    // park times out. Fullscreen windows are left to the switch
-    // animation instead.
-    if matches!(window.state(), WindowState::Fullscreen(_)) {
-      return Some("fullscreen windows aren't animated on open");
-    }
-
-    // New windows start in the `Shown` display state (the OS window
-    // already exists by the time it's managed), so the check is on
-    // whether the window will be visible after this pass.
-    if !matches!(
-      window.display_state(),
-      DisplayState::Showing | DisplayState::Shown
-    ) {
-      return Some("window won't be visible after this pass");
-    }
-
-    if !Self::is_animatable_window(window, placement) {
-      return Some("window can't be animated");
-    }
-
-    None
-  }
-
-  /// Whether the window is eligible for position animations.
-  fn is_animatable_window(
-    window: &WindowContainer,
-    placement: &WindowPlacement,
-  ) -> bool {
-    // Minimized windows aren't positioned by the WM, tiling windows that
-    // are scrolled out of the viewport are already parked at the edge,
-    // and dragged or resized windows follow the cursor. Tiling, floating,
-    // and fullscreen windows are all animated.
-    window.state() != WindowState::Minimized
-      && !placement.is_scrolled_out
-      && window.active_drag().is_none()
-  }
-
-  /// Registers an animation with the worker thread.
-  fn start_animation(
-    &mut self,
-    window: &WindowContainer,
-    // LINT: `from_rect` is only used on Windows.
-    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
-    from_rect: Option<Rect>,
-    // LINT: `to_rect` is only used on Windows.
-    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
-    to_rect: Rect,
-    // LINT: `duration` is only used on Windows.
-    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
-    duration: Duration,
-    // LINT: `curve` is only used on Windows.
-    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
-    curve: CubicBezier,
-    kind: AnimationKind,
-  ) {
+  ) -> Ownership {
     let window_id = window.id();
 
-    // A window that's still waiting for its open slide loses its cloak
-    // when any other animation takes over: the reveal is only requested
-    // by the in-flight open slide, which was just replaced. The pending
-    // open flag is dropped too, so that a later redraw pass doesn't
-    // start a second open slide for the same window.
-    if kind != AnimationKind::WindowOpen {
-      self.pending_open.remove(&window_id);
-      self.lift_window_cloak(window);
+    let was_scrolled_out = if input.placement.is_scrolled_out {
+      !self.scrolled_out.insert(window_id)
+    } else {
+      self.scrolled_out.remove(&window_id)
+    };
+
+    let is_opening = self.pending_open.remove(&window_id);
+    let is_suppressed = self.suppressed.remove(&window_id);
+
+    let can_animate = !is_suppressed
+      && !self.is_initial_pass
+      && self.is_available(config)
+      && window.state() != WindowState::Minimized
+      && window.active_drag().is_none();
+
+    let plan_input = can_animate
+      .then(|| {
+        self.plan_input(window, input, is_opening, was_scrolled_out)
+      })
+      .flatten();
+
+    let Some(plan_input) = plan_input else {
+      self.stop(window_id);
+      return Ownership::None;
+    };
+
+    // A window that's being revealed is already shown at its previous
+    // target. It's left alone unless it's going somewhere else.
+    if let Some(slot) = self.slots.get(&window_id) {
+      if slot.phase == SlotPhase::Revealing {
+        if slot.target.to.rect == plan_input.target_rect
+          && slot.target.end_visible == plan_input.after.is_visible
+        {
+          return Ownership::Deferred;
+        }
+
+        self.stop(window_id);
+        return self.plan_redraw_with(window, input, config, is_opening);
+      }
     }
+
+    let plan =
+      planner::plan(&plan_input, &config.value.general.animations);
+
+    if self.slots.contains_key(&window_id) {
+      return self.retarget(window_id, &plan_input, plan, input, config);
+    }
+
+    let Some(plan) = plan else {
+      // A window that was cloaked for an open animation that doesn't
+      // play gets its visibility applied by the redraw pass.
+      self.cloaked_for_open.remove(&window_id);
+      return Ownership::None;
+    };
+
+    self.start(window, plan, input, is_opening)
+  }
+
+  /// Plans a redraw for a window whose revealing animation was just
+  /// stopped, from where the window now is.
+  fn plan_redraw_with(
+    &mut self,
+    window: &WindowContainer,
+    input: &RedrawInput,
+    config: &UserConfig,
+    is_opening: bool,
+  ) -> Ownership {
+    let Some(plan_input) =
+      self.plan_input(window, input, is_opening, false)
+    else {
+      return Ownership::None;
+    };
+
+    match planner::plan(&plan_input, &config.value.general.animations) {
+      Some(plan) => self.start(window, plan, input, is_opening),
+      None => Ownership::None,
+    }
+  }
+
+  /// Describes a window's transition for the planner.
+  ///
+  /// Returns `None` if the window has no workspace or monitor.
+  fn plan_input(
+    &self,
+    window: &WindowContainer,
+    input: &RedrawInput,
+    is_opening: bool,
+    was_scrolled_out: bool,
+  ) -> Option<PlanInput> {
+    let workspace = window.workspace()?;
+    let monitor = window.monitor()?;
+
+    let switch_role =
+      input.switches.get(&monitor.id()).and_then(|switch| {
+        if workspace.id() == switch.to {
+          Some(SwitchRole::Entering {
+            is_forward: switch.is_forward,
+          })
+        } else if workspace.id() == switch.from {
+          Some(SwitchRole::Leaving {
+            is_forward: switch.is_forward,
+          })
+        } else {
+          None
+        }
+      });
+
+    let slot = self.slots.get(&window.id());
+
+    // An animated window is where its animation is heading. A window
+    // that's opening was cloaked when it was managed, so it was never
+    // visible.
+    let (was_visible, current_rect) = match slot {
+      Some(slot) => (slot.target.end_visible, slot.target.to.rect.clone()),
+      None => (
+        !is_opening
+          && !was_scrolled_out
+          && matches!(
+            input.previous_display_state,
+            DisplayState::Shown | DisplayState::Showing
+          ),
+        window.native_properties().frame,
+      ),
+    };
+
+    let will_be_visible = !input.placement.is_scrolled_out
+      && matches!(
+        window.display_state(),
+        DisplayState::Shown | DisplayState::Showing
+      );
+
+    Some(PlanInput {
+      is_opening,
+      switch_role,
+      before: Visibility {
+        is_visible: was_visible,
+        is_scrolled_out: was_scrolled_out,
+      },
+      after: Visibility {
+        is_visible: will_be_visible,
+        is_scrolled_out: input.placement.is_scrolled_out,
+      },
+      current_rect,
+      target_rect: input.placement.rect.clone(),
+      monitor_bounds: monitor.native_properties().bounds,
+    })
+  }
+
+  /// Starts a new animation for a window.
+  fn start(
+    &mut self,
+    window: &WindowContainer,
+    plan: planner::Plan,
+    input: &RedrawInput,
+    is_opening: bool,
+  ) -> Ownership {
+    let window_id = window.id();
+    let handle = window.native().id();
+
+    let (start, phase, ownership) = match plan.start {
+      Start::Cover => {
+        (StartFrame::Cover, SlotPhase::Covering, Ownership::Deferred)
+      }
+      Start::Hidden { from } => {
+        // The window must already be hidden: windows that are opening
+        // were cloaked when they were managed, and windows of hidden
+        // workspaces or scrolled out of view are cloaked by the hide
+        // method.
+        if is_opening && !self.cloaked_for_open.contains_key(&window_id) {
+          return Ownership::None;
+        }
+
+        let start = StartFrame::Hidden {
+          from,
+          settle: input.placement.rect.clone(),
+        };
+
+        (start, SlotPhase::Running, Ownership::PositionOnly)
+      }
+    };
+
+    // The animation takes over the cloak of an opening window.
+    self.cloaked_for_open.remove(&window_id);
 
     let sequence = self.next_sequence;
     self.next_sequence += 1;
 
-    #[cfg(target_os = "windows")]
-    {
-      let Some(worker_tx) = &self.worker_tx else {
-        return;
-      };
+    tracing::debug!("Animating window: {window}");
 
-      let _ = worker_tx.send(WorkerCommand::Start(StartRequest {
-        window_id,
-        sequence,
-        handle: window.native().id().0,
-        from: from_rect,
-        to: to_rect.clone(),
-        duration,
-        curve,
-        is_window_open: kind == AnimationKind::WindowOpen,
-      }));
-    }
-
-    self.active.insert(
+    self.send(WorkerCommand::Begin(BeginRequest {
       window_id,
-      ActiveAnimation {
+      sequence,
+      handle,
+      start,
+      target: plan.target.clone(),
+    }));
+
+    let deferred_position =
+      (phase == SlotPhase::Covering).then(|| DeferredPosition {
+        rect: input.placement.rect.clone(),
+        z_order: input.z_order.clone(),
+      });
+
+    self.slots.insert(
+      window_id,
+      Slot {
         sequence,
-        kind,
-        target: to_rect,
+        handle,
+        phase,
+        target: plan.target,
+        deferred_position,
       },
     );
+
+    ownership
   }
 
-  /// Keeps the open animation of a window alive when the layout moves
-  /// the window while the slide is still in flight.
-  ///
-  /// A window that opens in a scrolling workspace can be laid out
-  /// differently within the same sync pass or the next one, because the
-  /// strip re-flows and scrolls when the window is inserted. Instead of
-  /// cancelling the slide and snapping the window to the new placement,
-  /// the slide is retargeted to it from the window's current frame.
-  ///
-  /// Returns whether the animation worker owns the window's position,
-  /// meaning that the redraw pass must not reposition the window.
-  pub fn retarget_open_animation(
+  /// Redirects the animation in flight for a window to its new
+  /// placement.
+  fn retarget(
     &mut self,
-    window: &WindowContainer,
-    placement: &WindowPlacement,
+    window_id: Uuid,
+    plan_input: &PlanInput,
+    plan: Option<planner::Plan>,
+    input: &RedrawInput,
     config: &UserConfig,
-  ) -> bool {
-    let Some(active) = self.active.get(&window.id()) else {
-      return false;
-    };
+  ) -> Ownership {
+    // Transitions that wouldn't be animated on their own (e.g. the
+    // window being moved to a hidden workspace) still continue the
+    // animation in flight, so that the window doesn't snap.
+    let target = plan.map_or_else(
+      || {
+        let move_config = &config.value.general.animations.window_move;
+        let rect = plan_input.target_rect.clone();
 
-    if active.kind != AnimationKind::WindowOpen {
-      return false;
-    }
-
-    let target = active.target.clone();
-
-    // If the window can no longer be animated (e.g. it was hidden again
-    // or scrolled out of view mid-slide), let the regular redraw pass
-    // take over.
-    if !self.is_available(config)
-      || !Self::is_animatable_window(window, placement)
-    {
-      return false;
-    }
-
-    // A window that's transitioning to fullscreen is handed back to the
-    // regular redraw pass too: fullscreen windows aren't animated on
-    // open (see `open_slide_skip_reason`).
-    if matches!(window.state(), WindowState::Fullscreen(_)) {
-      return false;
-    }
-
-    if target == placement.rect {
-      // The placement didn't change; the window is already sliding
-      // towards it.
-      return true;
-    }
-
-    let animation_config = &config.value.general.animations.window_open;
-
-    tracing::debug!("Retargeting window open animation: {window}");
-
-    // Let the worker continue the slide from the window's current frame,
-    // or from the in-flight park frame if the window is still being
-    // parked, so that the retarget is seamless.
-    self.start_animation(
-      window,
-      None,
-      placement.rect.clone(),
-      Duration::from_millis(u64::from(animation_config.duration_ms)),
-      CubicBezier::from(&animation_config.curve),
-      AnimationKind::WindowOpen,
+        Target {
+          to: if plan_input.after.is_visible {
+            Frame::opaque(rect)
+          } else {
+            Frame::transparent(rect)
+          },
+          clip: None,
+          timing: Timing::from_config(
+            move_config.duration_ms,
+            &move_config.curve,
+          ),
+          end_visible: plan_input.after.is_visible,
+        }
+      },
+      |plan| plan.target,
     );
 
+    let Some(slot) = self.slots.get_mut(&window_id) else {
+      return Ownership::None;
+    };
+
+    if slot.target.to != target.to
+      || slot.target.end_visible != target.end_visible
+    {
+      tracing::debug!("Retargeting window animation (id={window_id}).");
+
+      let sequence = slot.sequence;
+      slot.target = target.clone();
+
+      self.send(WorkerCommand::Retarget {
+        window_id,
+        sequence,
+        target,
+        window_rect: input.placement.rect.clone(),
+      });
+    }
+
+    let Some(slot) = self.slots.get_mut(&window_id) else {
+      return Ownership::None;
+    };
+
+    match slot.phase {
+      SlotPhase::Covering => {
+        slot.deferred_position = Some(DeferredPosition {
+          rect: input.placement.rect.clone(),
+          z_order: input.z_order.clone(),
+        });
+
+        Ownership::Deferred
+      }
+      SlotPhase::Running | SlotPhase::Revealing => Ownership::PositionOnly,
+    }
+  }
+
+  /// Applies an update from the animation worker.
+  ///
+  /// `window` is the animated window, or `None` if it's no longer
+  /// managed.
+  pub fn apply_update(
+    &mut self,
+    update: AnimationUpdate,
+    window: Option<&WindowContainer>,
+  ) -> UpdateOutcome {
+    let window_id = update.window_id();
+
+    let Some(slot) = self.slots.get_mut(&window_id) else {
+      return UpdateOutcome::default();
+    };
+
+    // Updates for replaced animations are ignored.
+    if slot.sequence != update.sequence() {
+      return UpdateOutcome::default();
+    }
+
+    if window.is_none() {
+      self.stop(window_id);
+      return UpdateOutcome::default();
+    }
+
+    match update {
+      AnimationUpdate::Covered { sequence, .. } => {
+        if slot.phase != SlotPhase::Covering {
+          return UpdateOutcome::default();
+        }
+
+        // The thumbnail covers the window, so the window can be hidden
+        // underneath it without anything changing on screen.
+        if let Err(err) = (self.cloak)(slot.handle, true) {
+          tracing::warn!("Failed to cloak animated window: {err}");
+          return self.abort(window_id);
+        }
+
+        slot.phase = SlotPhase::Running;
+        let position = slot.deferred_position.take();
+        let needs_redraw = position.is_none();
+
+        self.send(WorkerCommand::Release {
+          window_id,
+          sequence,
+        });
+
+        UpdateOutcome {
+          position,
+          needs_redraw,
+        }
+      }
+      AnimationUpdate::Finished { sequence, .. } => {
+        slot.phase = SlotPhase::Revealing;
+
+        let cloak_result = (self.cloak)(slot.handle, false);
+
+        self.send(WorkerCommand::Revealed {
+          window_id,
+          sequence,
+        });
+
+        if let Err(err) = cloak_result {
+          tracing::warn!("Failed to reveal animated window: {err}");
+          self.suppressed.insert(window_id);
+
+          return UpdateOutcome {
+            position: None,
+            needs_redraw: true,
+          };
+        }
+
+        UpdateOutcome::default()
+      }
+      AnimationUpdate::Removed { .. } => {
+        self.slots.remove(&window_id);
+        UpdateOutcome::default()
+      }
+      AnimationUpdate::Aborted { .. } => self.abort(window_id),
+    }
+  }
+
+  /// Stops the animation of a window and makes sure that its final
+  /// state gets applied by a redraw without animating it.
+  fn abort(&mut self, window_id: Uuid) -> UpdateOutcome {
+    self.stop(window_id);
+    self.suppressed.insert(window_id);
+
+    UpdateOutcome {
+      position: None,
+      needs_redraw: true,
+    }
+  }
+
+  /// Stops the animation of a window, if any, and removes its
+  /// thumbnail. The window's visibility is left to the caller.
+  fn stop(&mut self, window_id: Uuid) {
+    self.cloaked_for_open.remove(&window_id);
+
+    if self.slots.remove(&window_id).is_some() {
+      self.send(WorkerCommand::Cancel { window_id });
+    }
+  }
+
+  /// Stops the animation of a window, e.g. because the user started
+  /// dragging it.
+  ///
+  /// Returns whether the window was animated, in which case it must be
+  /// redrawn to apply its final state.
+  pub fn interrupt(&mut self, window_id: Uuid) -> bool {
+    if !self.slots.contains_key(&window_id) {
+      return false;
+    }
+
+    self.abort(window_id);
     true
   }
 
-  /// Cancels the animation that's in flight for the window, if any.
-  pub fn cancel(&mut self, window: &WindowContainer) {
+  /// Stops animating a window that's no longer managed, and shows it if
+  /// it was hidden by an animation (the window stays alive, e.g. when
+  /// it's hidden to the tray).
+  pub fn release_window(&mut self, window: &WindowContainer) {
     let window_id = window.id();
+    let owned_cloak = self.owns_cloak(window_id);
 
-    if self.active.remove(&window_id).is_none() {
-      return;
-    }
+    self.stop(window_id);
+    self.pending_open.remove(&window_id);
+    self.scrolled_out.remove(&window_id);
+    self.suppressed.remove(&window_id);
 
-    self.recently_finished.insert(window_id, Instant::now());
-
-    // The regular redraw pass owns the window's position from here on,
-    // so the window must be visible again.
-    self.lift_window_cloak(window);
-
-    #[cfg(target_os = "windows")]
-    if let Some(worker_tx) = &self.worker_tx {
-      let _ = worker_tx.send(WorkerCommand::Cancel { window_id });
+    if owned_cloak {
+      if let Err(err) = (self.cloak)(window.native().id(), false) {
+        tracing::warn!("Failed to uncloak released window: {err}");
+      }
     }
   }
 
-  /// Lifts the cloak that hid a window while its open animation was
-  /// being prepared, if the cloak is still on.
-  ///
-  /// Called when the animation worker reports that the window was parked
-  /// (`AnimationUpdate::RevealCloakedWindow`), and when the window stops
-  /// being animated with the cloak still on: the open slide was skipped,
-  /// cancelled, or replaced by another animation, or the window was
-  /// unmanaged. The cloak must not be left on a window, because cloaked
-  /// windows can't be shown by the regular redraw pass.
-  pub fn lift_window_cloak(&mut self, window: &WindowContainer) {
-    if !self.cloaked_for_open.remove(&window.id()) {
-      return;
-    }
-
-    #[cfg(target_os = "windows")]
-    if let Err(err) = window.native().set_cloaked(false) {
-      tracing::warn!("Failed to lift cloak for window: {err}");
-    }
-  }
-
-  /// Confirms to the animation worker that a window's cloak was lifted,
-  /// so that the window's open slide can start.
-  ///
-  /// Sent while processing `AnimationUpdate::RevealCloakedWindow`, after
-  /// the cloak is lifted. The worker holds the slide's clock until the
-  /// confirmation, so that the slide isn't already partway through by
-  /// the time the window is visible.
-  pub fn confirm_reveal(
-    &self,
-    // LINT: `window_id` and `sequence` are only used on Windows.
-    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
-    window_id: Uuid,
-    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
-    sequence: u64,
-  ) {
-    #[cfg(target_os = "windows")]
-    if let Some(worker_tx) = &self.worker_tx {
-      let _ = worker_tx.send(WorkerCommand::Revealed {
-        window_id,
-        sequence,
-      });
-    }
-  }
-
-  /// Whether the window is cloaked by the WM while waiting for its open
-  /// animation to park it.
+  /// Whether the window is cloaked by an animation (or waiting for its
+  /// open animation).
   ///
   /// Cloaking a window produces window events, which shouldn't be
   /// mistaken for the window being hidden externally (e.g. to the tray).
-  pub fn is_awaiting_reveal(&self, window_id: Uuid) -> bool {
-    self.cloaked_for_open.contains(&window_id)
+  pub fn owns_cloak(&self, window_id: Uuid) -> bool {
+    self.slots.contains_key(&window_id)
+      || self.cloaked_for_open.contains_key(&window_id)
   }
 
-  /// Whether a move event for the window can be ignored because an
-  /// animation is responsible for its position.
-  pub fn should_ignore_move_event(&self, window: &WindowContainer) -> bool {
-    let window_id = window.id();
+  /// Notifies the animation worker that the monitor setup changed.
+  pub fn displays_changed(&self) {
+    self.send(WorkerCommand::DisplaysChanged);
+  }
 
-    if self.active.contains_key(&window_id) {
-      return true;
+  fn send(&self, command: WorkerCommand) {
+    if let Some(worker_tx) = &self.worker_tx {
+      let _ = worker_tx.send(command);
     }
+  }
+}
 
-    if !self
-      .recently_finished
-      .get(&window_id)
-      .is_some_and(|finished_at| {
-        finished_at.elapsed() < POST_ANIMATION_GRACE
-      })
-    {
-      return false;
+impl Drop for Animations {
+  /// Shows windows that are hidden by an animation, so that they aren't
+  /// left invisible when the WM exits.
+  fn drop(&mut self) {
+    let handles = self
+      .slots
+      .values()
+      .map(|slot| slot.handle)
+      .chain(self.cloaked_for_open.values().copied());
+
+    for handle in handles {
+      if let Err(err) = (self.cloak)(handle, false) {
+        tracing::warn!("Failed to uncloak animated window: {err}");
+      }
     }
+  }
+}
 
-    // Ignore the trailing events of the animation, except for the ones
-    // that finalize the display state: windows that are sliding out
-    // still need to be detected as hidden when they reach the hide
-    // corner, and windows that slid in are marked as shown when they
-    // reach their final position.
-    !matches!(
-      window.display_state(),
-      DisplayState::Hiding | DisplayState::Showing
+/// Cloaks or uncloaks the window with the given handle.
+#[cfg(target_os = "windows")]
+fn set_cloaked(handle: WindowId, cloaked: bool) -> anyhow::Result<()> {
+  use wm_platform::{NativeWindow, NativeWindowWindowsExt};
+
+  Ok(NativeWindow::from_handle(handle.0).set_cloaked(cloaked)?)
+}
+
+/// No-op on platforms without animations.
+#[cfg(not(target_os = "windows"))]
+#[allow(clippy::unnecessary_wraps)]
+fn set_cloaked(_handle: WindowId, _cloaked: bool) -> anyhow::Result<()> {
+  Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::{
+    commands::container::attach_container,
+    models::{TilingWindow, Workspace},
+    test_utils::mock_window_rect,
+  };
+
+  /// Animations with a worker channel that's read by the test, and a
+  /// no-op cloak.
+  fn animations() -> (Animations, UnboundedReceiver<WorkerCommand>) {
+    let (worker_tx, worker_rx) = mpsc::unbounded_channel();
+
+    let mut animations = Animations::disabled();
+    animations.worker_tx = Some(worker_tx);
+    animations.cloak = |_, _| Ok(());
+
+    (animations, worker_rx)
+  }
+
+  fn config() -> UserConfig {
+    let mut config = UserConfig::mock();
+    config.value.general.animations.enabled = true;
+    config.value.general.hide_method = HideMethod::Cloak;
+    config
+  }
+
+  /// A shown tiling window on the displayed workspace of a monitor, with
+  /// the initial sync pass already done.
+  fn window(animations: &mut Animations) -> WindowContainer {
+    let workspace = Workspace::mock().call();
+    let window = TilingWindow::mock().call();
+
+    attach_container(
+      &window.clone().into(),
+      &workspace.clone().into(),
+      None,
+    )
+    .unwrap();
+
+    let monitor = Monitor::mock().workspaces(vec![workspace]).call();
+
+    animations.detect_switches(std::slice::from_ref(&monitor));
+    animations.detect_switches(&[monitor]);
+
+    window.into()
+  }
+
+  /// Redraws a shown window at the given rect.
+  fn redraw(
+    animations: &mut Animations,
+    window: &WindowContainer,
+    rect: Rect,
+    config: &UserConfig,
+  ) -> Ownership {
+    animations.plan_redraw(
+      window,
+      &RedrawInput {
+        placement: &WindowPlacement {
+          rect,
+          is_scrolled_out: false,
+        },
+        previous_display_state: &DisplayState::Shown,
+        switches: &HashMap::new(),
+        z_order: &WindowZOrder::Normal,
+      },
+      config,
     )
   }
 
-  /// Applies a completed animation.
-  ///
-  /// Returns the window that needs to be redrawn with its final display
-  /// state applied, if any.
-  pub fn complete(&mut self, window_id: Uuid, sequence: u64) -> Option<Uuid> {
-    let is_slide_out = {
-      let animation = self.active.get(&window_id)?;
+  fn moved_rect() -> Rect {
+    mock_window_rect().translate_to_coordinates(500, 0)
+  }
 
-      // Ignore completions of animations that were replaced by a newer
-      // one.
-      if animation.sequence != sequence {
-        return None;
-      }
+  fn commands(
+    worker_rx: &mut UnboundedReceiver<WorkerCommand>,
+  ) -> Vec<WorkerCommand> {
+    std::iter::from_fn(|| worker_rx.try_recv().ok()).collect()
+  }
 
-      animation.kind == AnimationKind::SlideOut
+  /// Starts a move animation and returns its sequence number.
+  fn start_move(
+    animations: &mut Animations,
+    worker_rx: &mut UnboundedReceiver<WorkerCommand>,
+    window: &WindowContainer,
+  ) -> u64 {
+    assert_eq!(
+      redraw(animations, window, moved_rect(), &config()),
+      Ownership::Deferred
+    );
+
+    let commands_sent = commands(worker_rx);
+    let [WorkerCommand::Begin(begin)] = commands_sent.as_slice() else {
+      panic!("expected a single begin command, got {commands_sent:?}");
     };
 
-    self.active.remove(&window_id);
-    self.recently_finished.insert(window_id, Instant::now());
+    assert!(matches!(begin.start, StartFrame::Cover));
+    begin.sequence
+  }
 
-    // Windows that slid out need to be redrawn so that they're hidden
-    // (cloaked or moved to the hide corner) by the regular redraw pass.
-    is_slide_out.then_some(window_id)
+  #[test]
+  fn skips_initial_sync_pass() {
+    let (mut animations, mut worker_rx) = animations();
+
+    let workspace = Workspace::mock().call();
+    let window = TilingWindow::mock().call();
+    attach_container(
+      &window.clone().into(),
+      &workspace.clone().into(),
+      None,
+    )
+    .unwrap();
+    let monitor = Monitor::mock().workspaces(vec![workspace]).call();
+
+    animations.detect_switches(&[monitor]);
+
+    assert_eq!(
+      redraw(&mut animations, &window.into(), moved_rect(), &config()),
+      Ownership::None
+    );
+    assert!(commands(&mut worker_rx).is_empty());
+  }
+
+  #[test]
+  fn covers_moves_and_reveals_window() {
+    let (mut animations, mut worker_rx) = animations();
+    let window = window(&mut animations);
+
+    let sequence = start_move(&mut animations, &mut worker_rx, &window);
+    assert!(animations.owns_cloak(window.id()));
+
+    // The window is positioned once its thumbnail covers it.
+    let outcome = animations.apply_update(
+      AnimationUpdate::Covered {
+        window_id: window.id(),
+        sequence,
+      },
+      Some(&window),
+    );
+    assert_eq!(
+      outcome.position.map(|position| position.rect),
+      Some(moved_rect())
+    );
+    assert!(matches!(
+      commands(&mut worker_rx).as_slice(),
+      [WorkerCommand::Release { .. }]
+    ));
+
+    // Redraws while the window is hidden only position it.
+    assert_eq!(
+      redraw(&mut animations, &window, moved_rect(), &config()),
+      Ownership::PositionOnly
+    );
+    assert!(commands(&mut worker_rx).is_empty());
+
+    animations.apply_update(
+      AnimationUpdate::Finished {
+        window_id: window.id(),
+        sequence,
+      },
+      Some(&window),
+    );
+    assert!(matches!(
+      commands(&mut worker_rx).as_slice(),
+      [WorkerCommand::Revealed { .. }]
+    ));
+
+    // The redraw that the reveal triggers leaves the window alone.
+    assert_eq!(
+      redraw(&mut animations, &window, moved_rect(), &config()),
+      Ownership::Deferred
+    );
+    assert!(commands(&mut worker_rx).is_empty());
+
+    animations.apply_update(
+      AnimationUpdate::Removed {
+        window_id: window.id(),
+        sequence,
+      },
+      Some(&window),
+    );
+    assert!(!animations.owns_cloak(window.id()));
+  }
+
+  #[test]
+  fn retargets_animation_in_flight() {
+    let (mut animations, mut worker_rx) = animations();
+    let window = window(&mut animations);
+
+    start_move(&mut animations, &mut worker_rx, &window);
+
+    let retargeted_rect =
+      mock_window_rect().translate_to_coordinates(800, 0);
+
+    assert_eq!(
+      redraw(&mut animations, &window, retargeted_rect.clone(), &config()),
+      Ownership::Deferred
+    );
+
+    let commands_sent = commands(&mut worker_rx);
+    let [WorkerCommand::Retarget { target, .. }] =
+      commands_sent.as_slice()
+    else {
+      panic!("expected a single retarget command, got {commands_sent:?}");
+    };
+    assert_eq!(target.to.rect, retargeted_rect);
+  }
+
+  #[test]
+  fn applies_final_state_after_abort() {
+    let (mut animations, mut worker_rx) = animations();
+    let window = window(&mut animations);
+
+    let sequence = start_move(&mut animations, &mut worker_rx, &window);
+
+    let outcome = animations.apply_update(
+      AnimationUpdate::Aborted {
+        window_id: window.id(),
+        sequence,
+      },
+      Some(&window),
+    );
+
+    assert!(outcome.needs_redraw);
+    assert!(!animations.owns_cloak(window.id()));
+
+    // The redraw that applies the final state isn't animated.
+    assert_eq!(
+      redraw(&mut animations, &window, moved_rect(), &config()),
+      Ownership::None
+    );
+  }
+
+  #[test]
+  fn ignores_updates_for_replaced_animations() {
+    let (mut animations, mut worker_rx) = animations();
+    let window = window(&mut animations);
+
+    let sequence = start_move(&mut animations, &mut worker_rx, &window);
+
+    let outcome = animations.apply_update(
+      AnimationUpdate::Covered {
+        window_id: window.id(),
+        sequence: sequence + 1,
+      },
+      Some(&window),
+    );
+
+    assert!(outcome.position.is_none());
+    assert!(commands(&mut worker_rx).is_empty());
+  }
+
+  #[test]
+  fn requires_cloak_hide_method() {
+    let (mut animations, mut worker_rx) = animations();
+    let window = window(&mut animations);
+
+    let mut config = config();
+    config.value.general.hide_method = HideMethod::Hide;
+
+    assert_eq!(
+      redraw(&mut animations, &window, moved_rect(), &config),
+      Ownership::None
+    );
+    assert!(commands(&mut worker_rx).is_empty());
+  }
+
+  #[test]
+  fn releases_window_unmanaged_mid_animation() {
+    let (mut animations, mut worker_rx) = animations();
+    let window = window(&mut animations);
+
+    start_move(&mut animations, &mut worker_rx, &window);
+
+    animations.release_window(&window);
+
+    assert!(!animations.owns_cloak(window.id()));
+    assert!(matches!(
+      commands(&mut worker_rx).as_slice(),
+      [WorkerCommand::Cancel { .. }]
+    ));
   }
 }

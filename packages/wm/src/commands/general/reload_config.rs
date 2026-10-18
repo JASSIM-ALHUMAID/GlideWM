@@ -7,6 +7,7 @@ use wm_common::{WindowRuleEvent, WmEvent};
 use wm_platform::NativeWindowWindowsExt;
 
 use crate::{
+  animation::Animations,
   commands::{window::run_window_rules, workspace::sort_workspaces},
   layouts,
   traits::{CommonGetters, TilingSizeGetters, WindowGetters},
@@ -27,6 +28,8 @@ pub fn reload_config(
 
   // Re-evaluate user config file and set its values in state.
   config.reload()?;
+
+  Animations::warn_if_unsupported(config);
 
   // Re-run window rules on all active windows.
   for window in state.windows() {

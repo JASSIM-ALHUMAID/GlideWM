@@ -15,7 +15,7 @@ use wm_platform::{CornerStyle, OpacityValue};
 use wm_platform::{Rect, WindowZOrder};
 
 use crate::{
-  animation::{WindowAnimation, WorkspaceSwitch},
+  animation::{Ownership, RedrawInput, WorkspaceSwitch},
   commands::workspace::update_scroll_position,
   layouts,
   models::{Container, WindowContainer},
@@ -311,73 +311,50 @@ fn redraw_containers(
       DisplayState::Showing | DisplayState::Shown
     ) && !placement.is_scrolled_out;
 
-    // Animate the window if it's entering or leaving the displayed
-    // workspace of its monitor, or if it's being shown for the first
-    // time. Animated windows are positioned by the animation worker
-    // instead of `reposition_window`.
-    let animation = state
-      .animations
-      .plan_switch_animation(
-        window,
-        &previous_display_state,
+    // Animated windows are hidden while a thumbnail of them animates in
+    // their place (see `crate::animation`). The animation decides when
+    // they're shown or hidden, and windows that are still visible are
+    // positioned once their thumbnail covers them.
+    let ownership = state.animations.plan_redraw(
+      window,
+      &RedrawInput {
+        placement: &placement,
+        previous_display_state: &previous_display_state,
         switches,
-        &placement,
-        config,
-      )
-      .or_else(|| {
-        state
-          .animations
-          .plan_window_open(window, &placement, config)
-      });
-
-    // A window whose open slide is still in flight stays owned by the
-    // animation worker when the layout moves it mid-slide (e.g. a
-    // scrolling workspace re-flows just after the window is inserted).
-    // The slide is retargeted to the new placement instead of the
-    // window snapping into place.
-    let is_animating = animation.is_some()
-      || state
-        .animations
-        .retarget_open_animation(window, &placement, config);
+        z_order: &z_order,
+      },
+      config,
+    );
 
     tracing::debug!(
-      "Window sync pass: {window} rect={:?} scrolled_out={} previous={:?} display={:?} animating={is_animating}",
+      "Window sync pass: {window} rect={:?} scrolled_out={} previous={:?} display={:?} ownership={ownership:?}",
       placement.rect,
       placement.is_scrolled_out,
       previous_display_state,
       window.display_state()
     );
 
-    if !is_animating {
-      state.animations.cancel(window);
-    }
-
-    if let Some(animation) = &animation {
-      #[cfg(target_os = "windows")]
-      if let Err(err) = apply_window_animation(
-        window,
-        animation,
-        &z_order,
-        state.animations.is_awaiting_reveal(window.id()),
-        config,
-      ) {
-        tracing::warn!("Failed to apply window animation: {}", err);
+    match ownership {
+      Ownership::None => {
+        if let Err(err) = reposition_window(
+          window,
+          placement,
+          *hide_corner,
+          &z_order,
+          is_visible,
+          config,
+        ) {
+          tracing::warn!("Failed to set window position: {}", err);
+        }
       }
-
-      // The animation is a no-op on platforms that don't support it.
-      #[cfg(not(target_os = "windows"))]
-      let _ = animation;
-    } else if !is_animating {
-      if let Err(err) = reposition_window(
-        window,
-        placement,
-        *hide_corner,
-        &z_order,
-        is_visible,
-        config,
-      ) {
-        tracing::warn!("Failed to set window position: {}", err);
+      Ownership::PositionOnly => {
+        if let Err(err) =
+          apply_window_frame(window, &placement.rect, &z_order)
+        {
+          tracing::warn!("Failed to set window position: {}", err);
+        }
       }
+      Ownership::Deferred => {}
     }
 
     // Whether the window is either transitioning to or from fullscreen.
@@ -500,86 +477,113 @@ fn reposition_window(
     return Ok(());
   }
 
+  // Windows that are being dragged only follow the cursor's resize.
+  if window.active_drag().is_some() {
+    return apply_window_frame(window, &rect, z_order);
+  }
+
+  // Hide windows before moving them, and show windows after moving them.
+  // Moves are applied asynchronously by the window's thread, so this
+  // order keeps windows from flashing at their new position before
+  // they're hidden (or at their old position before they're moved).
+  #[cfg(target_os = "windows")]
+  if !is_visible {
+    set_window_visibility(window, false, config)?;
+  }
+
+  apply_window_frame(window, &rect, z_order)?;
+
+  #[cfg(target_os = "windows")]
+  if is_visible {
+    set_window_visibility(window, true, config)?;
+  }
+
+  Ok(())
+}
+
+/// Moves and resizes a window to the given rect, and applies the
+/// window's minimized/maximized state.
+///
+/// The window's visibility is left as-is.
+pub fn apply_window_frame(
+  window: &WindowContainer,
+  rect: &Rect,
+  // LINT: `z_order` is only used on Windows.
+  #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+  z_order: &WindowZOrder,
+) -> anyhow::Result<()> {
   if window.active_drag().is_some() {
     window.native().resize(rect.width(), rect.height())?;
-  } else {
-    #[cfg(target_os = "macos")]
-    window.native().set_frame(&rect)?;
+    return Ok(());
+  }
 
-    #[cfg(target_os = "windows")]
-    {
-      use wm_platform::{
-        SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-        SWP_NOCOPYBITS, SWP_NOSENDCHANGING, WS_MAXIMIZEBOX,
-      };
+  #[cfg(target_os = "macos")]
+  window.native().set_frame(rect)?;
 
-      // Restore window if it's minimized/maximized and shouldn't be. This
-      // is needed to be able to move and resize it.
-      let should_restore = match &window.state() {
-        // Need to restore window if transitioning from maximized
-        // fullscreen to non-maximized fullscreen.
-        WindowState::Fullscreen(fullscreen) => {
-          !fullscreen.maximized && window.native().is_maximized()?
-        }
-        // No need to restore window if it'll be minimized. Transitioning
-        // from maximized to minimized works without having to
-        // restore.
-        WindowState::Minimized => false,
-        _ => {
-          window.native().is_minimized()?
-            || window.native().is_maximized()?
-        }
-      };
+  #[cfg(target_os = "windows")]
+  {
+    use wm_platform::{
+      SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+      SWP_NOCOPYBITS, SWP_NOSENDCHANGING, WS_MAXIMIZEBOX,
+    };
 
-      if should_restore {
-        // Restoring to position has the same effect as `ShowWindow` with
-        // `SW_RESTORE`, but doesn't cause a flicker.
-        window.native().restore(Some(&rect))?;
+    // Restore window if it's minimized/maximized and shouldn't be. This
+    // is needed to be able to move and resize it.
+    let should_restore = match &window.state() {
+      // Need to restore window if transitioning from maximized
+      // fullscreen to non-maximized fullscreen.
+      WindowState::Fullscreen(fullscreen) => {
+        !fullscreen.maximized && window.native().is_maximized()?
       }
+      // No need to restore window if it'll be minimized. Transitioning
+      // from maximized to minimized works without having to
+      // restore.
+      WindowState::Minimized => false,
+      _ => {
+        window.native().is_minimized()?
+          || window.native().is_maximized()?
+      }
+    };
 
-      let mut swp_flags = SWP_NOACTIVATE
-        | SWP_NOCOPYBITS
-        | SWP_NOSENDCHANGING
-        | SWP_ASYNCWINDOWPOS;
+    if should_restore {
+      // Restoring to position has the same effect as `ShowWindow` with
+      // `SW_RESTORE`, but doesn't cause a flicker.
+      window.native().restore(Some(rect))?;
+    }
 
-      match &window.state() {
-        WindowState::Minimized => {
-          if !window.native().is_minimized()? {
-            window.native().minimize()?;
-          }
-        }
-        WindowState::Fullscreen(fullscreen)
-          if fullscreen.maximized
-            && window.native().has_window_style(WS_MAXIMIZEBOX) =>
-        {
-          if !window.native().is_maximized()? {
-            window.native().maximize()?;
-          }
+    let mut swp_flags = SWP_NOACTIVATE
+      | SWP_NOCOPYBITS
+      | SWP_NOSENDCHANGING
+      | SWP_ASYNCWINDOWPOS;
 
-          window.native().set_window_pos(z_order, &rect, swp_flags)?;
-        }
-        _ => {
-          swp_flags |= SWP_FRAMECHANGED;
-
-          window.native().set_window_pos(z_order, &rect, swp_flags)?;
-
-          // When there's a mismatch between the DPI of the monitor and the
-          // window, the window might be sized incorrectly after the first
-          // move. If we set the position twice, inconsistencies after the
-          // first move are resolved.
-          if window.has_pending_dpi_adjustment() {
-            window.native().set_window_pos(z_order, &rect, swp_flags)?;
-          }
+    match &window.state() {
+      WindowState::Minimized => {
+        if !window.native().is_minimized()? {
+          window.native().minimize()?;
         }
       }
+      WindowState::Fullscreen(fullscreen)
+        if fullscreen.maximized
+          && window.native().has_window_style(WS_MAXIMIZEBOX) =>
+      {
+        if !window.native().is_maximized()? {
+          window.native().maximize()?;
+        }
 
-      // Set visibility based on the hide method.
-      if config.value.general.hide_method == HideMethod::Cloak {
-        window.native().set_cloaked(!is_visible)?;
-      } else if is_visible {
-        window.native().show()?;
-      } else {
-        window.native().hide()?;
+        window.native().set_window_pos(z_order, rect, swp_flags)?;
+      }
+      _ => {
+        swp_flags |= SWP_FRAMECHANGED;
+
+        window.native().set_window_pos(z_order, rect, swp_flags)?;
+
+        // When there's a mismatch between the DPI of the monitor and the
+        // window, the window might be sized incorrectly after the first
+        // move. If we set the position twice, inconsistencies after the
+        // first move are resolved.
+        if window.has_pending_dpi_adjustment() {
+          window.native().set_window_pos(z_order, rect, swp_flags)?;
+        }
       }
     }
   }
@@ -587,57 +591,19 @@ fn reposition_window(
   Ok(())
 }
 
-/// Applies the initial visuals for an animated window: positions it at
-/// the animation's start frame and makes it visible.
-///
-/// Windows that are sliding out aren't repositioned here — the animation
-/// worker captures their current frame as the start of the animation and
-/// the final position/hide is applied once the animation completes.
-///
-/// Windows that are cloaked until their open slide's park frame lands
-/// are revealed by the animation worker instead of here (see
-/// `AnimationUpdate::RevealCloakedWindow`).
+/// Shows or hides a window based on the hide method.
 #[cfg(target_os = "windows")]
-fn apply_window_animation(
+fn set_window_visibility(
   window: &WindowContainer,
-  animation: &WindowAnimation,
-  z_order: &WindowZOrder,
-  is_awaiting_reveal: bool,
+  is_visible: bool,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
-  use wm_platform::{
-    SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING,
-  };
-
-  if let WindowAnimation::SlideIn { start_rect } = animation {
-    tracing::debug!(
-      "Parking animated window at start frame: {window} frame={:?}",
-      start_rect
-    );
-
-    // The frame is applied without `SWP_FRAMECHANGED`: a position-only
-    // change doesn't need a non-client frame recalculation.
-    let swp_flags = SWP_NOACTIVATE
-      | SWP_NOCOPYBITS
-      | SWP_NOSENDCHANGING
-      | SWP_ASYNCWINDOWPOS;
-
-    window.native().set_window_pos(z_order, start_rect, swp_flags)?;
-
-    // Make the window visible before the animation starts. Windows are
-    // normally made visible by `reposition_window`.
-    //
-    // A window that's cloaked while its open slide waits for its park
-    // frame is revealed by the animation worker instead — revealing it
-    // here would undo the cloak and show the window at its old
-    // position.
-    if !is_awaiting_reveal {
-      if config.value.general.hide_method == HideMethod::Cloak {
-        window.native().set_cloaked(false)?;
-      } else {
-        window.native().show()?;
-      }
-    }
+  if config.value.general.hide_method == HideMethod::Cloak {
+    window.native().set_cloaked(!is_visible)?;
+  } else if is_visible {
+    window.native().show()?;
+  } else {
+    window.native().hide()?;
   }
 
   Ok(())

@@ -40,8 +40,10 @@ general:
   # - 'false': Only show windows from the currently shown workspaces.
   show_all_in_taskbar: false
 
-  # Animate window positions. Minimize/restore/close animations aren't
-  # handled here — use a tool such as Windhawk for those.
+  # Animate windows. Windows are animated via live compositor thumbnails,
+  # so animations stay smooth regardless of how busy an application is.
+  # Requires `hide_method: 'cloak'`. Minimize/restore/close animations
+  # aren't handled here — use a tool such as Windhawk for those.
   animations:
     # Whether window animations are enabled.
     enabled: false
@@ -51,6 +53,7 @@ general:
       # - 'none': No animation.
       # - 'slide': Windows slide horizontally.
       # - 'slide_vert': Windows slide vertically.
+      # - 'fade': The workspaces cross-fade in place.
       style: 'slide'
 
       # Where the incoming workspace slides in from. 'auto' derives the
@@ -70,27 +73,39 @@ general:
 
       # Easing curve as cubic-bezier control points [x1, y1, x2, y2].
       # Ease-out: the workspace glides into place. Values of y outside
-      # 0-1 are clamped, since window slides are translations (an
-      # overshoot would read as a bounce).
+      # 0-1 are clamped (an overshoot would read as a bounce).
       curve: [0.22, 1.0, 0.36, 1.0]
 
     # Animation to play when a window is first shown (e.g. an application
-    # that's launched). If the window is repositioned while the animation
-    # is still running (e.g. the tiling layout is still settling), the
-    # animation smoothly retargets to the new position instead of snapping.
+    # that's launched).
     window_open:
       # - 'none': No animation.
       # - 'slide': Window slides in from the right edge of the monitor.
       # - 'slide_vert': Window slides in from the bottom edge of the
       #   monitor.
+      # - 'popin': Window grows into place while fading in.
+      # - 'fade': Window fades in.
       style: 'slide'
 
       # How long the animation lasts, in milliseconds.
       duration_ms: 200
 
       # Easing curve as cubic-bezier control points [x1, y1, x2, y2].
-      # Ease-out, like the workspace switch. Values of y outside 0-1 are
-      # clamped, since window slides are translations.
+      curve: [0.22, 1.0, 0.36, 1.0]
+
+    # Animation to play when a visible window changes position or size
+    # (e.g. windows reflowing when a window opens or closes, windows being
+    # moved, swapped, or resized, layout switches, and the strip of a
+    # scrolling workspace scrolling). Windows that are already animating
+    # smoothly redirect to their new position instead of snapping.
+    window_move:
+      # Whether the animation is enabled.
+      enabled: true
+
+      # How long the animation lasts, in milliseconds.
+      duration_ms: 150
+
+      # Easing curve as cubic-bezier control points [x1, y1, x2, y2].
       curve: [0.22, 1.0, 0.36, 1.0]
 
 gaps:

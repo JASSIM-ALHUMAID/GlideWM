@@ -33,7 +33,8 @@ follows the same seams, plus scroll-offset state and platform clipping.
 
 **Non-goals (v1)**
 
-- Scroll animations / smooth inertial scrolling (no animation system yet).
+- Smooth inertial scrolling. (Scrolling the strip is animated by the
+  `animations.window_move` animation when animations are enabled.)
 - Trackpad & mouse-wheel scrolling, drag-to-scroll, overview mode.
 - Full column management (stacking windows vertically inside a column relies
   on existing `SplitContainer` machinery — see §2.2; not a v1 command surface).

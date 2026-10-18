@@ -18,6 +18,8 @@ pub fn handle_display_settings_changed(
 ) -> anyhow::Result<()> {
   tracing::info!("Display settings changed.");
 
+  state.animations.displays_changed();
+
   // Ignore the event if retrieval of the displays or their properties
   // fails (can happen transiently during sleep/wake).
   let displays = try_warn!(state

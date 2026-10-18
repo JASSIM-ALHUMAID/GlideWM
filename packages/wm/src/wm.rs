@@ -22,8 +22,9 @@ use crate::{
       toggle_tiling_direction,
     },
     general::{
-      cycle_focus, disable_binding_mode, enable_binding_mode,
-      platform_sync, reload_config, shell_exec, toggle_pause,
+      apply_window_frame, cycle_focus, disable_binding_mode,
+      enable_binding_mode, platform_sync, reload_config, shell_exec,
+      toggle_pause,
     },
     monitor::focus_monitor,
     window::{
@@ -66,6 +67,7 @@ impl WindowManager {
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (exit_tx, exit_rx) = mpsc::unbounded_channel();
     let (animations, animation_rx) = Animations::new();
+    Animations::warn_if_unsupported(config);
 
     let mut state =
       WmState::new(dispatcher, event_tx, exit_tx, animations);
@@ -81,10 +83,9 @@ impl WindowManager {
 
   /// Applies an update from the animation worker.
   ///
-  /// Windows that slid out are redrawn, so that the regular redraw pass
-  /// applies their final position and hides them. Windows that finished
-  /// being parked for their open slide have their cloak lifted and the
-  /// reveal confirmed to the worker, so that the slide starts visible.
+  /// Covered windows are moved to their final position (the animation
+  /// hides them first), and windows whose animation was aborted are
+  /// redrawn to apply their final state.
   pub fn process_animation_update(
     &mut self,
     update: AnimationUpdate,
@@ -92,36 +93,23 @@ impl WindowManager {
   ) -> anyhow::Result<()> {
     let state = &mut self.state;
 
-    match update {
-      AnimationUpdate::Completed {
-        window_id,
-        sequence,
-      } => {
-        if let Some(window_id) =
-          state.animations.complete(window_id, sequence)
+    let window = state
+      .container_by_id(update.window_id())
+      .and_then(|container| container.as_window_container().ok());
+
+    let outcome = state.animations.apply_update(update, window.as_ref());
+
+    if let Some(window) = window {
+      if let Some(position) = outcome.position {
+        if let Err(err) =
+          apply_window_frame(&window, &position.rect, &position.z_order)
         {
-          if let Some(window) = state
-            .container_by_id(window_id)
-            .and_then(|container| container.as_window_container().ok())
-          {
-            state.pending_sync.queue_container_to_redraw(window);
-          }
+          tracing::warn!("Failed to set animated window position: {err}");
         }
       }
-      AnimationUpdate::RevealCloakedWindow {
-        window_id,
-        sequence,
-      } => {
-        if let Some(window) = state
-          .container_by_id(window_id)
-          .and_then(|container| container.as_window_container().ok())
-        {
-          state.animations.lift_window_cloak(&window);
-        }
 
-        // Start the slide after the cloak was lifted, so that the
-        // window's first visible frame is the start of the slide.
-        state.animations.confirm_reveal(window_id, sequence);
+      if outcome.needs_redraw {
+        state.pending_sync.queue_container_to_redraw(window);
       }
     }
 

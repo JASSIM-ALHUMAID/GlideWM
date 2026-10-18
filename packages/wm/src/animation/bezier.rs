@@ -177,7 +177,8 @@ mod tests {
     // For this curve, `x(t) == t` exactly (the x control points are
     // evenly spaced along the diagonal), so the eased value at progress
     // `p` is the bezier polynomial evaluated at `p`.
-    let curve = CubicBezier::new(1.0 / 3.0, 1.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0);
+    let curve =
+      CubicBezier::new(1.0 / 3.0, 1.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0);
 
     for i in 0..=20 {
       let progress = f64::from(i) / 20.0;

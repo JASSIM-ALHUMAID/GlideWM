@@ -245,6 +245,18 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn set_cloaked(&self, cloaked: bool) -> crate::Result<()>;
 
+  /// Whether the window has the `WS_VISIBLE` style, regardless of
+  /// whether it's cloaked.
+  ///
+  /// Unlike [`NativeWindow::is_visible`], this stays `true` while the
+  /// window is cloaked, and only turns `false` when the window is hidden
+  /// (e.g. to the tray).
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn has_visible_style(&self) -> bool;
+
   /// Marks the window as fullscreen.
   ///
   /// Causes the native Windows taskbar to be moved to the bottom of the
@@ -382,6 +394,10 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn set_cloaked(&self, cloaked: bool) -> crate::Result<()> {
     self.inner.set_cloaked(cloaked)
+  }
+
+  fn has_visible_style(&self) -> bool {
+    self.inner.has_visible_style()
   }
 
   fn mark_fullscreen(&self, fullscreen: bool) -> crate::Result<()> {

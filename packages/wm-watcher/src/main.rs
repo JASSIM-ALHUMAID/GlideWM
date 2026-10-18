@@ -45,6 +45,12 @@ async fn main() -> anyhow::Result<()> {
           tracing::warn!("Failed to show window: {:?}", err);
         }
 
+        // Windows can be cloaked by the `cloak` hide method or while
+        // they're animated.
+        if let Err(err) = window.set_cloaked(false) {
+          tracing::warn!("Failed to uncloak window: {:?}", err);
+        }
+
         let _ = window.set_taskbar_visibility(true);
         let _ = window.set_border_color(None);
         let _ =

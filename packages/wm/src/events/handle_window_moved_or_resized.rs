@@ -39,14 +39,9 @@ pub fn handle_window_moved_or_resized(
     let old_frame_position = window.native_properties().frame;
     let frame_position = try_warn!(window.native().frame());
 
-    // Animated windows are repositioned by the animation worker on every
-    // frame. Ignore the resulting move events, so that they aren't
-    // mistaken for user-initiated moves — and cancel the animation if
-    // the user starts interacting with the window.
-    if is_interactive_start {
-      state.animations.cancel(&window);
-    } else if state.animations.should_ignore_move_event(&window) {
-      return Ok(());
+    // Stop animating a window once the user starts interacting with it.
+    if is_interactive_start && state.animations.interrupt(window.id()) {
+      state.pending_sync.queue_container_to_redraw(window.clone());
     }
 
     window.update_native_properties(|properties| {

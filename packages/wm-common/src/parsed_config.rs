@@ -129,11 +129,12 @@ impl Default for GeneralConfig {
   }
 }
 
-/// Config for animating window positions.
+/// Config for animating windows.
 ///
-/// Animations are disabled by default. Window minimize/restore/close
-/// animations aren't handled by `GlazeWM` — use a tool such as
-/// Windhawk for those.
+/// Animations are disabled by default, and require the `cloak` hide
+/// method: windows are animated via live compositor thumbnails while the
+/// real windows are cloaked. Window minimize/restore/close animations
+/// aren't handled by `GlazeWM` — use a tool such as Windhawk for those.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct AnimationsConfig {
@@ -146,6 +147,12 @@ pub struct AnimationsConfig {
   /// Animation when a window is first shown (e.g. an application that's
   /// launched).
   pub window_open: WindowOpenAnimationConfig,
+
+  /// Animation when a visible window changes position or size (e.g.
+  /// tiling windows reflowing when a window opens or closes, windows
+  /// being moved or resized, or the strip of a scrolling workspace
+  /// scrolling).
+  pub window_move: WindowMoveAnimationConfig,
 }
 
 /// Config for the workspace switch animation.
@@ -199,6 +206,10 @@ pub enum WorkspaceSwitchAnimationStyle {
   /// as an alias.
   #[serde(alias = "slidevert")]
   SlideVert,
+
+  /// The outgoing workspace fades out while the incoming workspace fades
+  /// in, in place.
+  Fade,
 }
 
 /// Config for the window open animation.
@@ -244,6 +255,37 @@ pub enum WindowOpenAnimationStyle {
   /// as an alias.
   #[serde(alias = "slidevert")]
   SlideVert,
+
+  /// Window grows into place from a slightly smaller size while fading
+  /// in.
+  Popin,
+
+  /// Window fades in, in place.
+  Fade,
+}
+
+/// Config for the window move animation.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct WindowMoveAnimationConfig {
+  /// Whether the animation is enabled.
+  pub enabled: bool,
+
+  /// How long the animation lasts, in milliseconds.
+  pub duration_ms: u32,
+
+  /// Easing curve as `[x1, y1, x2, y2]` cubic-bezier control points.
+  pub curve: AnimationCurve,
+}
+
+impl Default for WindowMoveAnimationConfig {
+  fn default() -> Self {
+    Self {
+      enabled: true,
+      duration_ms: 150,
+      curve: AnimationCurve::default(),
+    }
+  }
 }
 
 /// Where a workspace slides in from. `left`/`right` name the side the
@@ -275,8 +317,7 @@ pub enum AnimationDirection {
 /// Serialized as an array of four numbers: `[x1, y1, x2, y2]`. The start
 /// `(0, 0)` and end `(1, 1)` points are implicit. `y` values outside
 /// `0..=1` are accepted, but window animations clamp the eased value to
-/// the animation's endpoints, since window slides are translations (an
-/// overshoot would read as a bounce).
+/// the animation's endpoints (an overshoot would read as a bounce).
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(try_from = "[f64; 4]", into = "[f64; 4]")]
 pub struct AnimationCurve {
