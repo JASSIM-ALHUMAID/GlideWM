@@ -155,7 +155,7 @@ pub(super) fn redistribute_freed_space(
 /// their siblings, so the shares must sum to `1` for the children to
 /// fill the viewport. Sizes that were set while the scrolling layout
 /// was active are fractions of the viewport that can sum to more than
-/// `1` (e.g. two windows at the default `scroll.window_width` of `0.7`
+/// `1` (e.g. two windows at a `scroll.window_width` of `0.7`
 /// sum to `1.4`). Rescaling keeps the relative sizes of the children.
 pub(super) fn normalize_sizes(workspace: &Workspace) {
   let children = workspace.tiling_children().collect::<Vec<_>>();

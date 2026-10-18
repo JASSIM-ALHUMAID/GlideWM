@@ -226,10 +226,7 @@ mod tests {
   use crate::{
     commands::container::{attach_container, set_focused_descendant},
     models::{Monitor, TilingWindow, Workspace},
-    traits::{
-      PositionGetters, TilingDirectionGetters, TilingSizeGetters,
-      MIN_TILING_SIZE,
-    },
+    traits::{PositionGetters, TilingDirectionGetters, TilingSizeGetters},
   };
 
   /// Creates a `UserConfig` that switches the given workspace to the
@@ -300,13 +297,16 @@ mod tests {
 
     update_workspace_configs(&mut state, &config).unwrap();
 
-    assert!(workspace.is_scrolling());
+    assert_eq!(workspace.layout(), WorkspaceLayout::Scrolling);
 
     // The config's scroll axis is applied as the tiling direction.
     assert_eq!(workspace.tiling_direction(), TilingDirection::Vertical);
 
     // Out-of-range sizes are clamped to valid viewport fractions.
-    assert!((first.tiling_size() - MIN_TILING_SIZE).abs() < f32::EPSILON);
+    assert!(
+      (first.tiling_size() - ScrollConfig::MIN_ITEM_SIZE).abs()
+        < f32::EPSILON
+    );
     assert!((second.tiling_size() - 0.75).abs() < f32::EPSILON);
 
     // The stale scroll offset is reset.

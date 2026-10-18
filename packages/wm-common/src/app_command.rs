@@ -156,7 +156,20 @@ pub enum SubscribableEvent {
 #[derive(Clone, Debug, Parser, PartialEq, Serialize)]
 pub enum InvokeCommand {
   AdjustBorders(InvokeAdjustBordersCommand),
+  /// Centers the strip item containing the focused container in the
+  /// viewport of its scrolling workspace. No-op for workspaces that
+  /// don't use the scrolling layout.
+  CenterFocused,
   Close,
+  /// Cycles the size of the strip item containing the focused container
+  /// through the scrolling workspace's preset sizes (`preset_widths` or
+  /// `preset_heights`, depending on the scroll axis). No-op for
+  /// workspaces that don't use the scrolling layout.
+  CyclePresetSize {
+    /// Cycle towards smaller presets instead of larger ones.
+    #[clap(long, default_value_t = false)]
+    reverse: bool,
+  },
   /// Cycles the layout used by a workspace (defaults to the focused
   /// workspace). See `WorkspaceLayout::ALL` for the cycle order.
   CycleLayout {
@@ -498,6 +511,24 @@ mod tests {
       InvokeCommand::CycleLayout {
         workspace: Some("2".to_string()),
       }
+    );
+  }
+
+  #[test]
+  fn parses_scrolling_layout_commands() {
+    assert_eq!(
+      parse_command("center-focused"),
+      InvokeCommand::CenterFocused
+    );
+
+    assert_eq!(
+      parse_command("cycle-preset-size"),
+      InvokeCommand::CyclePresetSize { reverse: false }
+    );
+
+    assert_eq!(
+      parse_command("cycle-preset-size --reverse"),
+      InvokeCommand::CyclePresetSize { reverse: true }
     );
   }
 

@@ -179,7 +179,9 @@ impl Default for WorkspaceSwitchAnimationConfig {
 }
 
 /// Style of the workspace switch animation.
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceSwitchAnimationStyle {
   /// No animation.
@@ -224,7 +226,9 @@ impl Default for WindowOpenAnimationConfig {
 }
 
 /// Style of the window open animation.
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum WindowOpenAnimationStyle {
   /// No animation.
@@ -246,7 +250,9 @@ pub enum WindowOpenAnimationStyle {
 /// incoming workspace comes in from; `up`/`down` name the direction the
 /// windows travel (`up` rises from the bottom edge, `down` descends
 /// from the top edge).
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum AnimationDirection {
   /// Direction is derived from the workspace switch (e.g. focusing the
@@ -667,9 +673,33 @@ pub struct ScrollConfig {
   /// Axis that the strip of windows scrolls along.
   pub axis: TilingDirection,
 
-  /// Default size of new strip items as a fraction of the viewport
-  /// (measured along the scroll axis). Clamped to `0.05..=1.0`.
+  /// Default width of new strip items as a fraction of the viewport
+  /// width. Used while the scroll axis is horizontal. Clamped to
+  /// `ScrollConfig::MIN_ITEM_SIZE..=1.0`.
   pub window_width: f32,
+
+  /// Default height of new strip items as a fraction of the viewport
+  /// height. Used while the scroll axis is vertical. Clamped to
+  /// `ScrollConfig::MIN_ITEM_SIZE..=1.0`.
+  pub window_height: f32,
+
+  /// Widths (as fractions of the viewport width) that the
+  /// `cycle-preset-size` command cycles the focused strip item through
+  /// while the scroll axis is horizontal.
+  ///
+  /// Sorted, deduplicated, and clamped on deserialization. Must not be
+  /// empty.
+  #[serde(deserialize_with = "deserialize_preset_sizes")]
+  pub preset_widths: Vec<f32>,
+
+  /// Heights (as fractions of the viewport height) that the
+  /// `cycle-preset-size` command cycles the focused strip item through
+  /// while the scroll axis is vertical.
+  ///
+  /// Sorted, deduplicated, and clamped on deserialization. Must not be
+  /// empty.
+  #[serde(deserialize_with = "deserialize_preset_sizes")]
+  pub preset_heights: Vec<f32>,
 
   /// How the focused strip item is scrolled into view.
   pub align: ScrollAlign,
@@ -678,15 +708,88 @@ pub struct ScrollConfig {
   pub insert_position: ScrollInsertPosition,
 }
 
+impl ScrollConfig {
+  /// Minimum size of a strip item as a fraction of the viewport.
+  pub const MIN_ITEM_SIZE: f32 = 0.05;
+
+  /// Clamps a strip item size into the range of valid viewport
+  /// fractions (`MIN_ITEM_SIZE..=1.0`).
+  #[must_use]
+  pub fn clamp_item_size(size: f32) -> f32 {
+    size.clamp(Self::MIN_ITEM_SIZE, 1.0)
+  }
+
+  /// Default size of new strip items for the given scroll axis
+  /// (`window_width` for a horizontal axis, `window_height` for a
+  /// vertical axis), clamped to the range of valid viewport fractions.
+  #[must_use]
+  pub fn default_item_size(&self, axis: &TilingDirection) -> f32 {
+    Self::clamp_item_size(match axis {
+      TilingDirection::Horizontal => self.window_width,
+      TilingDirection::Vertical => self.window_height,
+    })
+  }
+
+  /// Preset sizes for the given scroll axis (`preset_widths` for a
+  /// horizontal axis, `preset_heights` for a vertical axis).
+  #[must_use]
+  pub fn preset_sizes(&self, axis: &TilingDirection) -> &[f32] {
+    match axis {
+      TilingDirection::Horizontal => &self.preset_widths,
+      TilingDirection::Vertical => &self.preset_heights,
+    }
+  }
+}
+
 impl Default for ScrollConfig {
   fn default() -> Self {
     ScrollConfig {
       axis: TilingDirection::Horizontal,
       window_width: 0.5,
+      window_height: 0.5,
+      preset_widths: vec![1. / 3., 0.5, 2. / 3., 1.0],
+      preset_heights: vec![0.5, 1.0],
       align: ScrollAlign::Minimal,
       insert_position: ScrollInsertPosition::AfterFocused,
     }
   }
+}
+
+/// Helper function for deserializing the preset sizes of the scrolling
+/// layout.
+///
+/// Sizes are clamped to the range of valid viewport fractions, then
+/// sorted and deduplicated. Returns an error for an empty list or for
+/// non-finite values.
+fn deserialize_preset_sizes<'de, D>(
+  deserializer: D,
+) -> Result<Vec<f32>, D::Error>
+where
+  D: serde::de::Deserializer<'de>,
+{
+  let sizes = Vec::<f32>::deserialize(deserializer)?;
+  normalize_preset_sizes(sizes).map_err(serde::de::Error::custom)
+}
+
+/// Clamps, sorts, and deduplicates preset sizes of the scrolling layout.
+fn normalize_preset_sizes(sizes: Vec<f32>) -> anyhow::Result<Vec<f32>> {
+  if sizes.is_empty() {
+    bail!("Preset sizes must contain at least one size.");
+  }
+
+  if let Some(size) = sizes.iter().find(|size| !size.is_finite()) {
+    bail!("Preset sizes must be finite numbers, got '{size}'.");
+  }
+
+  let mut sizes = sizes
+    .into_iter()
+    .map(ScrollConfig::clamp_item_size)
+    .collect::<Vec<_>>();
+
+  sizes.sort_by(f32::total_cmp);
+  sizes.dedup_by(|a, b| (*a - *b).abs() < f32::EPSILON);
+
+  Ok(sizes)
 }
 
 /// How the viewport scrolls to keep the focused strip item in view.
@@ -842,5 +945,73 @@ mod tests {
       .collect::<Vec<_>>();
 
     assert_eq!(cycle, WorkspaceLayout::ALL);
+  }
+
+  #[test]
+  fn picks_default_item_size_by_axis() {
+    let config = ScrollConfig {
+      window_width: 0.4,
+      window_height: 0.8,
+      ..ScrollConfig::default()
+    };
+
+    assert!(
+      (config.default_item_size(&TilingDirection::Horizontal) - 0.4).abs()
+        < f32::EPSILON
+    );
+    assert!(
+      (config.default_item_size(&TilingDirection::Vertical) - 0.8).abs()
+        < f32::EPSILON
+    );
+
+    // Out-of-range sizes are clamped into valid viewport fractions.
+    let config = ScrollConfig {
+      window_width: 2.0,
+      window_height: 0.0,
+      ..ScrollConfig::default()
+    };
+
+    assert!(
+      (config.default_item_size(&TilingDirection::Horizontal) - 1.0).abs()
+        < f32::EPSILON
+    );
+    assert!(
+      (config.default_item_size(&TilingDirection::Vertical)
+        - ScrollConfig::MIN_ITEM_SIZE)
+        .abs()
+        < f32::EPSILON
+    );
+  }
+
+  #[test]
+  fn normalizes_preset_sizes() {
+    let sizes = normalize_preset_sizes(vec![1.5, 0.5, 0.01, 0.5]).unwrap();
+
+    assert_eq!(sizes, vec![ScrollConfig::MIN_ITEM_SIZE, 0.5, 1.0]);
+  }
+
+  #[test]
+  fn rejects_invalid_preset_sizes() {
+    assert!(normalize_preset_sizes(vec![]).is_err());
+    assert!(normalize_preset_sizes(vec![0.5, f32::NAN]).is_err());
+  }
+
+  #[test]
+  fn deserializes_scroll_config() {
+    let config: ScrollConfig = serde_yaml::from_str(
+      "window_height: 0.7\npreset_widths: [1.0, 0.25]",
+    )
+    .unwrap();
+
+    assert!((config.window_height - 0.7).abs() < f32::EPSILON);
+    assert_eq!(config.preset_widths, vec![0.25, 1.0]);
+    assert_eq!(
+      config.preset_heights,
+      ScrollConfig::default().preset_heights
+    );
+
+    assert!(
+      serde_yaml::from_str::<ScrollConfig>("preset_heights: []").is_err()
+    );
   }
 }

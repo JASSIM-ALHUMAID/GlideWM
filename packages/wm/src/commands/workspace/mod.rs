@@ -1,4 +1,6 @@
 mod activate_workspace;
+mod center_focused;
+mod cycle_preset_size;
 mod deactivate_workspace;
 mod focus_workspace;
 mod move_workspace_in_direction;
@@ -9,6 +11,8 @@ mod update_scroll_position;
 mod update_workspace_config;
 
 pub use activate_workspace::*;
+pub use center_focused::*;
+pub use cycle_preset_size::*;
 pub use deactivate_workspace::*;
 pub use focus_workspace::*;
 pub use move_workspace_in_direction::*;

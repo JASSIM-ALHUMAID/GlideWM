@@ -48,7 +48,7 @@ module.
 | Function | Question it answers | `Tiling` | `Scrolling` | `Bsp` |
 | --- | --- | --- | --- | --- |
 | `child_rect` | Rect of a direct child within the workspace viewport | Share-based rect | Strip rect (viewport fraction − scroll offset) | Share-based rect |
-| `default_child_size` | Size to give a new direct child | `None` (sized by attach) | `scroll.window_width` | `None` (sized by attach) |
+| `default_child_size` | Size to give a new direct child | `None` (sized by attach) | `scroll.window_width` / `window_height` (per scroll axis) | `None` (sized by attach) |
 | `child_length_reference` | Length that a direct child's `tiling_size` is a fraction of | `None` (space alongside siblings) | Viewport extent along the axis | `None` (space alongside siblings) |
 | `on_child_attached` | Size child after attaching to a parent | Size child to an even share of siblings | Leave sizes untouched | Size child to an even share of siblings (splits end up 0.5/0.5) |
 | `on_child_detached` | Free space after detaching from a parent | Redistribute to remaining siblings | Leave sizes untouched | Redistribute to remaining siblings |

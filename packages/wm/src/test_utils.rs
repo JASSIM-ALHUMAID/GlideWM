@@ -323,6 +323,11 @@ impl WmState {
     let (event_tx, _) = mpsc::unbounded_channel();
     let (exit_tx, _) = mpsc::unbounded_channel();
 
-    Self::new(Dispatcher::mock(), event_tx, exit_tx, Animations::disabled())
+    Self::new(
+      Dispatcher::mock(),
+      event_tx,
+      exit_tx,
+      Animations::disabled(),
+    )
   }
 }

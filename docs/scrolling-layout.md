@@ -133,7 +133,10 @@ workspaces:
     layout: scrolling        # 'tiling' (default) | 'scrolling' | 'bsp'
     scroll:                  # only read when layout == scrolling; optional
       axis: horizontal       # 'horizontal' (default) | 'vertical'
-      window_width: 0.5      # default size of new windows (fraction of viewport)
+      window_width: 0.5      # default width of new windows (horizontal axis)
+      window_height: 0.5     # default height of new windows (vertical axis)
+      preset_widths: [0.333, 0.5, 0.667, 1.0]  # `cycle-preset-size` sizes (horizontal axis)
+      preset_heights: [0.5, 1.0]               # `cycle-preset-size` sizes (vertical axis)
       align: minimal         # 'minimal' (default, Niri-like) | 'center'
       insert_position: after_focused   # 'after_focused' | 'end'
 ```
@@ -146,7 +149,7 @@ pub struct WorkspaceConfig {
   #[serde(default)]
   pub layout: WorkspaceLayout,        // enum { Tiling, Scrolling, Bsp } (default Tiling)
   #[serde(default)]
-  pub scroll: ScrollConfig,           // axis, window_width, align, insert_position
+  pub scroll: ScrollConfig,           // axis, window_width/height, preset sizes, align, insert_position
   #[serde(default)]
   pub bsp: BspConfig,                 // automatic_scheme
 }
@@ -209,7 +212,9 @@ order-based sibling logic navigates the strip unmodified. Covered by tests in
 - `attach_container` **skips sibling redistribution** for a scrolling parent
   (the usual `1/(n+1)` resize of siblings): the new child keeps its own size.
 - Default size of new windows: `create_window` sets `scroll.window_width`
-  (clamped to `[MIN_TILING_SIZE, 1.0]`) on tiling windows whose insertion
+  (horizontal scroll axis) or `scroll.window_height` (vertical scroll
+  axis), clamped to `[ScrollConfig::MIN_ITEM_SIZE, 1.0]`, on tiling
+  windows whose insertion
   parent is the scrolling workspace itself (i.e. which land as strip items).
   Windows inserted into a column get the normal attach sizing along the
   column's axis. A newly inserted strip item that is the workspace's only
@@ -308,6 +313,15 @@ workspace), or appends to the end of the strip when it has none.
   perpendicular to the scroll axis. The offset is clamped to the valid
   range; the next focus change re-ensures the focused strip item is visible,
   which may undo scrolling away from it.
+- `cycle-preset-size [--reverse]` — `cycle_preset_size`. Resizes the strip
+  item containing the subject container to the next (or previous) size in
+  `scroll.preset_widths` / `scroll.preset_heights` (per the current scroll
+  axis), wrapping around, and keeps the item in view. No-op for
+  non-scrolling workspaces.
+- `center-focused` — `center_focused`. Centers the strip item containing
+  the subject container in the viewport regardless of `scroll.align`; the
+  offset is clamped, so items at either end stay flush with the viewport
+  edge. No-op for non-scrolling workspaces.
 - `toggle-tiling-direction` on a window whose direction container is a
   scrolling workspace flips the workspace's scroll axis in place — the
   window is never wrapped in a new split container to hold the inverted

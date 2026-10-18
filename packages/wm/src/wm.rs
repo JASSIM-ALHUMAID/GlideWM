@@ -32,8 +32,9 @@ use crate::{
       update_window_state, WindowPositionTarget,
     },
     workspace::{
-      focus_workspace, move_workspace_in_direction, scroll_workspace,
-      set_workspace_layout, update_workspace_config,
+      center_focused, cycle_preset_size, focus_workspace,
+      move_workspace_in_direction, scroll_workspace, set_workspace_layout,
+      update_workspace_config,
     },
   },
   events::{
@@ -92,7 +93,10 @@ impl WindowManager {
     let state = &mut self.state;
 
     match update {
-      AnimationUpdate::Completed { window_id, sequence } => {
+      AnimationUpdate::Completed {
+        window_id,
+        sequence,
+      } => {
         if let Some(window_id) =
           state.animations.complete(window_id, sequence)
         {
@@ -104,7 +108,10 @@ impl WindowManager {
           }
         }
       }
-      AnimationUpdate::RevealCloakedWindow { window_id, sequence } => {
+      AnimationUpdate::RevealCloakedWindow {
+        window_id,
+        sequence,
+      } => {
         if let Some(window) = state
           .container_by_id(window_id)
           .and_then(|container| container.as_window_container().ok())
@@ -535,6 +542,12 @@ impl WindowManager {
           ),
           _ => Ok(()),
         }
+      }
+      InvokeCommand::CenterFocused => {
+        center_focused(&subject_container, state)
+      }
+      InvokeCommand::CyclePresetSize { reverse } => {
+        cycle_preset_size(&subject_container, *reverse, state)
       }
       InvokeCommand::Scroll { direction, amount } => {
         let workspace =

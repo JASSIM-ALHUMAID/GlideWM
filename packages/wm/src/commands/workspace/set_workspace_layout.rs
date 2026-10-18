@@ -60,7 +60,7 @@ mod tests {
     commands::container::{attach_container, set_focused_descendant},
     models::{Monitor, TilingWindow, Workspace},
     test_utils::mock_scrolling_workspace,
-    traits::{PositionGetters, TilingSizeGetters, MIN_TILING_SIZE},
+    traits::{PositionGetters, TilingSizeGetters},
   };
 
   #[test]
@@ -99,8 +99,11 @@ mod tests {
     )
     .unwrap();
 
-    assert!(workspace.is_scrolling());
-    assert!((first.tiling_size() - MIN_TILING_SIZE).abs() < f32::EPSILON);
+    assert_eq!(workspace.layout(), WorkspaceLayout::Scrolling);
+    assert!(
+      (first.tiling_size() - ScrollConfig::MIN_ITEM_SIZE).abs()
+        < f32::EPSILON
+    );
     assert!((second.tiling_size() - 0.75).abs() < f32::EPSILON);
     assert!(state.pending_sync.has_changes());
   }

@@ -615,7 +615,7 @@ mod tests {
     commands::container::attach_container,
     models::{Monitor, SplitContainer, TilingWindow, Workspace},
     test_utils::mock_scrolling_workspace,
-    traits::{TilingSizeGetters, MIN_TILING_SIZE},
+    traits::TilingSizeGetters,
   };
 
   #[test]
@@ -650,10 +650,11 @@ mod tests {
     resize_tiling_container(&strip_item.clone().into(), 2.0);
     assert!((strip_item.tiling_size() - 1.0).abs() < f32::EPSILON);
 
-    // A strip item cannot be resized below the minimum tiling size.
+    // A strip item cannot be resized below the minimum strip item size.
     resize_tiling_container(&strip_item.clone().into(), 0.0);
     assert!(
-      (strip_item.tiling_size() - MIN_TILING_SIZE).abs() < f32::EPSILON
+      (strip_item.tiling_size() - ScrollConfig::MIN_ITEM_SIZE).abs()
+        < f32::EPSILON
     );
   }
 

@@ -8,7 +8,10 @@
 //! See `docs/scrolling-layout.md` for the design and semantics of the
 //! layout, and `docs/layouts.md` for how layouts fit into the codebase.
 
-use wm_common::{ScrollInsertPosition, TilingDirection, WindowState};
+use wm_common::{
+  ScrollAlign, ScrollConfig, ScrollInsertPosition, TilingDirection,
+  WindowState,
+};
 use wm_platform::{Direction, Rect};
 
 use super::WindowPlacement;
@@ -22,7 +25,7 @@ use crate::{
   models::{Container, TilingContainer, TilingWindow, Workspace},
   traits::{
     CommonGetters, PositionGetters, TilingDirectionGetters,
-    TilingSizeGetters, MIN_TILING_SIZE,
+    TilingSizeGetters,
   },
   wm_state::WmState,
 };
@@ -117,7 +120,83 @@ pub fn clamp_scroll_offset(workspace: &Workspace) -> anyhow::Result<bool> {
   Ok(workspace.set_scroll_offset(clamped))
 }
 
-/// Scrolls the viewport so that the given descendant is fully visible.
+/// Start and extent of a range along the scroll axis, in pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AxisSpan {
+  start: i32,
+  extent: i32,
+}
+
+impl AxisSpan {
+  /// Span of `rect` along the given scroll axis.
+  fn of_rect(rect: &Rect, axis: &TilingDirection) -> Self {
+    match axis {
+      TilingDirection::Horizontal => Self {
+        start: rect.x(),
+        extent: rect.width(),
+      },
+      TilingDirection::Vertical => Self {
+        start: rect.y(),
+        extent: rect.height(),
+      },
+    }
+  }
+
+  fn end(self) -> i32 {
+    self.start + self.extent
+  }
+
+  fn center(self) -> i32 {
+    self.start + self.extent / 2
+  }
+}
+
+/// Distance that the scroll offset must change by to bring `item` into
+/// the viewport per the given alignment.
+///
+/// - `Minimal`: the least distance that makes the item fully visible (`0`
+///   if it already is).
+/// - `Center`: the distance that centers the item in the viewport.
+fn scroll_delta(
+  align: &ScrollAlign,
+  viewport: AxisSpan,
+  item: AxisSpan,
+) -> i32 {
+  match align {
+    ScrollAlign::Minimal => {
+      if item.start < viewport.start {
+        item.start - viewport.start
+      } else if item.end() > viewport.end() {
+        item.end() - viewport.end()
+      } else {
+        0
+      }
+    }
+    ScrollAlign::Center => item.center() - viewport.center(),
+  }
+}
+
+/// Gets the top-level strip item of the workspace that contains the
+/// given descendant. This can be the descendant itself.
+///
+/// Returns `None` if the container is not a tiling descendant of the
+/// workspace.
+pub fn strip_item_of(
+  workspace: &Workspace,
+  descendant: &Container,
+) -> Option<TilingContainer> {
+  descendant
+    .self_and_ancestors()
+    .find(|ancestor| {
+      ancestor
+        .parent()
+        .is_some_and(|parent| parent.id() == workspace.id())
+    })
+    .and_then(|strip_item| strip_item.as_tiling_container().ok())
+}
+
+/// Scrolls the viewport so that the given descendant is in view, per the
+/// workspace's `scroll.align` config.
 ///
 /// The descendant is resolved to the top-level strip item that contains
 /// it. Returns whether the offset changed. Has no effect for windows
@@ -126,68 +205,76 @@ pub fn ensure_descendant_visible(
   workspace: &Workspace,
   container: &Container,
 ) -> anyhow::Result<bool> {
-  if !workspace.is_scrolling() {
+  let align = workspace.config().scroll.align;
+  scroll_descendant_into_view(workspace, container, &align)
+}
+
+/// Scrolls the viewport so that the given descendant is in view, per the
+/// given alignment.
+///
+/// The descendant is resolved to the top-level strip item that contains
+/// it. The resulting offset is clamped to the valid range, so items at
+/// either end of the strip can't be centered past the strip's edge.
+/// Returns whether the offset changed. Has no effect for workspaces that
+/// don't use the scrolling layout, or for containers that aren't tiling
+/// descendants of the workspace.
+pub fn scroll_descendant_into_view(
+  workspace: &Workspace,
+  container: &Container,
+  align: &ScrollAlign,
+) -> anyhow::Result<bool> {
+  if !super::supports_scrolling(workspace) {
     return Ok(false);
   }
 
-  // Get the top-level strip item containing the descendant.
-  let strip_item = container
-    .self_and_ancestors()
-    .take_while(|ancestor| ancestor.id() != workspace.id())
-    .last();
-
-  let Some(strip_item) = strip_item else {
+  let Some(strip_item) = strip_item_of(workspace, container) else {
     return Ok(false);
   };
 
-  let Ok(strip_item) = strip_item.as_tiling_container() else {
-    return Ok(false);
-  };
+  let axis = workspace.tiling_direction();
+  let viewport = AxisSpan::of_rect(&workspace.to_rect()?, &axis);
+  let item = AxisSpan::of_rect(&strip_item.to_rect()?, &axis);
 
-  let viewport_rect = workspace.to_rect()?;
-  let item_rect = strip_item.to_rect()?;
-
-  let (viewport_start, viewport_extent, item_start, item_extent) =
-    match workspace.tiling_direction() {
-      TilingDirection::Horizontal => (
-        viewport_rect.x(),
-        viewport_rect.width(),
-        item_rect.x(),
-        item_rect.width(),
-      ),
-      TilingDirection::Vertical => (
-        viewport_rect.y(),
-        viewport_rect.height(),
-        item_rect.y(),
-        item_rect.height(),
-      ),
-    };
-
-  let delta = match workspace.config().scroll.align {
-    wm_common::ScrollAlign::Minimal => {
-      let item_end = item_start + item_extent;
-      let viewport_end = viewport_start + viewport_extent;
-
-      if item_start < viewport_start {
-        item_start - viewport_start
-      } else if item_end > viewport_end {
-        item_end - viewport_end
-      } else {
-        0
-      }
-    }
-    wm_common::ScrollAlign::Center => {
-      let item_center = item_start + item_extent / 2;
-      let viewport_center = viewport_start + viewport_extent / 2;
-
-      item_center - viewport_center
-    }
-  };
-
-  let new_offset = (workspace.scroll_offset() + delta)
-    .clamp(0, max_scroll_offset(workspace)?);
+  let new_offset = (workspace.scroll_offset()
+    + scroll_delta(align, viewport, item))
+  .clamp(0, max_scroll_offset(workspace)?);
 
   Ok(workspace.set_scroll_offset(new_offset))
+}
+
+/// Next preset size to cycle a strip item of size `current` to.
+///
+/// Cycling forward picks the smallest preset that is larger than
+/// `current`, and wraps around to the smallest preset. Cycling in reverse
+/// picks the largest preset that is smaller than `current`, and wraps
+/// around to the largest preset. Sizes within a small tolerance of a
+/// preset count as that preset, so that rounding doesn't get a strip
+/// item stuck.
+///
+/// Returns `None` if `presets` is empty. `presets` is expected to be
+/// sorted in ascending order.
+pub fn next_preset(
+  current: f32,
+  presets: &[f32],
+  reverse: bool,
+) -> Option<f32> {
+  /// Tolerance for treating a size as equal to a preset.
+  const TOLERANCE: f32 = 0.001;
+
+  if reverse {
+    presets
+      .iter()
+      .rev()
+      .find(|preset| **preset < current - TOLERANCE)
+      .or_else(|| presets.last())
+      .copied()
+  } else {
+    presets
+      .iter()
+      .find(|preset| **preset > current + TOLERANCE)
+      .or_else(|| presets.first())
+      .copied()
+  }
 }
 
 /// Gets the index of the top-level strip item that contains the given
@@ -199,24 +286,21 @@ fn strip_item_index(
   workspace: &Workspace,
   descendant: &Container,
 ) -> Option<usize> {
-  descendant
-    .self_and_ancestors()
-    .find(|ancestor| {
-      ancestor
-        .parent()
-        .is_some_and(|parent| parent.id() == workspace.id())
-    })
-    .map(|strip_item| strip_item.index())
+  strip_item_of(workspace, descendant).map(|strip_item| strip_item.index())
 }
 
 /// Default tiling size for a new strip item, from the workspace's
-/// `scroll.window_width` config.
+/// `scroll.window_width` (horizontal scroll axis) or
+/// `scroll.window_height` (vertical scroll axis) config.
+///
+/// The current scroll axis is used rather than the configured
+/// `scroll.axis`, since the axis can be flipped at runtime (see
+/// `super::toggle_child_direction`).
 pub(super) fn default_item_size(workspace: &Workspace) -> f32 {
   workspace
     .config()
     .scroll
-    .window_width
-    .clamp(MIN_TILING_SIZE, 1.0)
+    .default_item_size(&workspace.tiling_direction())
 }
 
 /// Rect of a top-level child of a scrolling workspace.
@@ -364,8 +448,8 @@ pub(super) fn normalize(
   // that were set as shares of the workspace (e.g. `1/3` with three
   // windows) into the valid range.
   for child in workspace.tiling_children() {
-    let clamped_size = child.tiling_size().clamp(MIN_TILING_SIZE, 1.);
-    child.set_tiling_size(clamped_size);
+    child
+      .set_tiling_size(ScrollConfig::clamp_item_size(child.tiling_size()));
   }
 
   workspace.set_scroll_offset(0);
@@ -517,7 +601,7 @@ pub(super) fn resize_item(
   target_size: f32,
 ) {
   container_to_resize
-    .set_tiling_size(target_size.clamp(MIN_TILING_SIZE, 1.0));
+    .set_tiling_size(ScrollConfig::clamp_item_size(target_size));
 }
 
 /// Gets the factor by which a container's tiling size should be rescaled
@@ -544,7 +628,8 @@ pub(super) fn rescale_factor_for_move(
       ancestor.parent().is_some_and(|parent| {
         matches!(
           &parent,
-          Container::Workspace(workspace) if workspace.is_scrolling()
+          Container::Workspace(workspace)
+            if super::supports_scrolling(workspace)
         )
       })
     });
@@ -644,5 +729,93 @@ mod tests {
     let result = placement(window, rect).unwrap();
     assert!(result.is_scrolled_out);
     assert_eq!(result.rect.bottom, 0);
+  }
+
+  #[test]
+  fn default_item_size_follows_scroll_axis() {
+    let scroll_config = ScrollConfig {
+      window_width: 0.4,
+      window_height: 0.8,
+      ..ScrollConfig::default()
+    };
+
+    let (workspace, _windows) = mock_scrolling_workspace(
+      TilingDirection::Horizontal,
+      1,
+      0.5,
+      &GapsConfig::default(),
+      scroll_config,
+    );
+
+    assert!((default_item_size(&workspace) - 0.4).abs() < f32::EPSILON);
+
+    // Flipping the scroll axis at runtime (e.g. `toggle-tiling-direction`)
+    // switches to the size configured for the new axis.
+    workspace.set_tiling_direction(TilingDirection::Vertical);
+    assert!((default_item_size(&workspace) - 0.8).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn cycles_to_next_preset() {
+    let presets = [0.25, 0.5, 1.0];
+
+    assert_eq!(next_preset(0.25, &presets, false), Some(0.5));
+    assert_eq!(next_preset(1.0, &presets, false), Some(0.25));
+    assert_eq!(next_preset(0.5, &presets, true), Some(0.25));
+    assert_eq!(next_preset(0.25, &presets, true), Some(1.0));
+
+    // Sizes between presets go to the adjacent preset in the cycle
+    // direction.
+    assert_eq!(next_preset(0.3, &presets, false), Some(0.5));
+    assert_eq!(next_preset(0.3, &presets, true), Some(0.25));
+
+    // Sizes within the tolerance of a preset count as that preset.
+    assert_eq!(next_preset(0.5004, &presets, false), Some(1.0));
+    assert_eq!(next_preset(0.4996, &presets, true), Some(0.25));
+
+    assert_eq!(next_preset(0.5, &[], false), None);
+  }
+
+  #[test]
+  fn computes_minimal_scroll_delta() {
+    let viewport = AxisSpan {
+      start: 0,
+      extent: 1000,
+    };
+
+    let delta = |start, extent| {
+      scroll_delta(
+        &ScrollAlign::Minimal,
+        viewport,
+        AxisSpan { start, extent },
+      )
+    };
+
+    // Fully visible items don't scroll.
+    assert_eq!(delta(100, 500), 0);
+    // Items cut off at the start scroll back by the cut-off distance.
+    assert_eq!(delta(-200, 500), -200);
+    // Items cut off at the end scroll forward by the cut-off distance.
+    assert_eq!(delta(800, 500), 300);
+  }
+
+  #[test]
+  fn computes_center_scroll_delta() {
+    let viewport = AxisSpan {
+      start: 100,
+      extent: 1000,
+    };
+
+    let delta = |start, extent| {
+      scroll_delta(
+        &ScrollAlign::Center,
+        viewport,
+        AxisSpan { start, extent },
+      )
+    };
+
+    assert_eq!(delta(400, 400), 0);
+    assert_eq!(delta(900, 400), 500);
+    assert_eq!(delta(-300, 400), -700);
   }
 }

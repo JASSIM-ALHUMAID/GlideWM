@@ -83,11 +83,6 @@ impl Workspace {
     self.0.borrow().gaps_config.clone()
   }
 
-  /// Whether the workspace uses the scrolling layout.
-  pub fn is_scrolling(&self) -> bool {
-    self.0.borrow().config.layout == WorkspaceLayout::Scrolling
-  }
-
   /// The layout that the workspace uses to arrange its tiling children.
   ///
   /// Call sites outside of `crate::layouts` should prefer the behavior

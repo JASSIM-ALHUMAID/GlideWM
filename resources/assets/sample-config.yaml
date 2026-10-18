@@ -188,9 +188,17 @@ workspaces:
     #scroll:
     #  # Axis that the strip of windows scrolls along.
     #  axis: 'horizontal'
-    #  # Default size of new windows as a fraction of the viewport
-    #  # (measured along the scroll axis).
+    #  # Default width of new windows as a fraction of the viewport
+    #  # width. Used while the scroll axis is horizontal.
     #  window_width: 0.5
+    #  # Default height of new windows as a fraction of the viewport
+    #  # height. Used while the scroll axis is vertical.
+    #  window_height: 0.5
+    #  # Sizes that `cycle-preset-size` cycles the focused window
+    #  # through (fractions of the viewport), for a horizontal and a
+    #  # vertical scroll axis respectively.
+    #  preset_widths: [0.333, 0.5, 0.667, 1.0]
+    #  preset_heights: [0.5, 1.0]
     #  # How the focused window is scrolled into view:
     #  # - 'minimal': Scroll the least amount required (niri-like).
     #  # - 'center': Center the focused window in the viewport.
@@ -212,6 +220,10 @@ workspaces:
     #   `set-layout --layout scrolling --workspace 1`
     #   `set-layout --layout bsp --workspace 1`
     #   `scroll --direction left --amount 10%`
+    # The focused window can also be resized to the next preset size, or
+    # centered in the viewport:
+    #   `cycle-preset-size` (or `cycle-preset-size --reverse`)
+    #   `center-focused`
   - name: '2'
   - name: '3'
   - name: '4'
