@@ -17,6 +17,14 @@ pub fn handle_window_shown(
   if let Some(window) = found_window {
     info!("Window shown: {window}");
 
+    // A window that's hidden while its thumbnail animates in its place can
+    // get shown by someone else (e.g. the shell uncloaks File Explorer
+    // windows once they finish launching). It's hidden again until its
+    // animation ends.
+    if state.animations.reassert_cloak(&window) {
+      return Ok(());
+    }
+
     // Update display state if window is already managed.
     if config.value.general.hide_method != HideMethod::PlaceInCorner
       && window.display_state() == DisplayState::Showing

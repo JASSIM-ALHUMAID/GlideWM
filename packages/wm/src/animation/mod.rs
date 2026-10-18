@@ -898,6 +898,44 @@ impl Animations {
     }
   }
 
+  /// Hides a window again that was shown by someone else while an
+  /// animation hides it.
+  ///
+  /// The WM hides animated windows with the same cloak that the shell
+  /// uses for its own windows. The shell lifts that cloak on its own in
+  /// some cases (e.g. File Explorer windows, which the shell uncloaks
+  /// once they finish launching), which would leave the window visible
+  /// underneath its animating thumbnail.
+  ///
+  /// Returns whether the window is hidden by an animation, in which case
+  /// the shown event that triggered this must otherwise be ignored. If
+  /// the window can't be hidden again, its animation is stopped and
+  /// `false` is returned, so that the event is handled as usual.
+  pub fn reassert_cloak(&mut self, window: &WindowContainer) -> bool {
+    let window_id = window.id();
+
+    let handle = match self.slots.get(&window_id) {
+      Some(slot) if slot.phase == SlotPhase::Running => slot.handle,
+      Some(_) => return false,
+      None => match self.cloaked_for_open.get(&window_id) {
+        Some(handle) => *handle,
+        None => return false,
+      },
+    };
+
+    tracing::debug!(
+      "Window was shown while animated; hiding it again: {window}"
+    );
+
+    if let Err(err) = (self.cloak)(handle, true) {
+      tracing::warn!("Failed to hide animated window again: {err}");
+      self.abort(window_id);
+      return false;
+    }
+
+    true
+  }
+
   /// Whether the window is cloaked by an animation (or waiting for its
   /// open animation).
   ///
@@ -1319,6 +1357,44 @@ mod tests {
     assert_eq!(
       CLOAK_CALLS.with(std::cell::RefCell::take),
       vec![true, false]
+    );
+  }
+
+  #[test]
+  fn hides_window_shown_by_someone_else_mid_animation() {
+    let (mut animations, mut worker_rx) = animations();
+    animations.cloak = recording_cloak;
+    let window = window(&mut animations);
+
+    let sequence = start_move(&mut animations, &mut worker_rx, &window);
+
+    // Shown events before the window is hidden are handled as usual.
+    assert!(!animations.reassert_cloak(&window));
+
+    animations.apply_update(
+      AnimationUpdate::Covered {
+        window_id: window.id(),
+        sequence,
+      },
+      Some(&window),
+    );
+
+    // The window is hidden again while its thumbnail animates.
+    assert!(animations.reassert_cloak(&window));
+
+    // The WM's own reveal at the end of the animation isn't undone.
+    animations.apply_update(
+      AnimationUpdate::Finished {
+        window_id: window.id(),
+        sequence,
+      },
+      Some(&window),
+    );
+    assert!(!animations.reassert_cloak(&window));
+
+    assert_eq!(
+      CLOAK_CALLS.with(std::cell::RefCell::take),
+      vec![true, true, false]
     );
   }
 
