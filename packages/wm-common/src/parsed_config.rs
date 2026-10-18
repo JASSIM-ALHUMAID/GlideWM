@@ -100,6 +100,10 @@ pub struct GeneralConfig {
   /// Affects which windows get shown in the native Windows taskbar.
   pub show_all_in_taskbar: bool,
 
+  /// What happens to the existing windows of a workspace when its layout
+  /// is switched. Can be overridden per workspace.
+  pub layout_switch: LayoutSwitchBehavior,
+
   /// Config for animating window positions.
   pub animations: AnimationsConfig,
 }
@@ -124,6 +128,7 @@ impl Default for GeneralConfig {
         }
       },
       show_all_in_taskbar: false,
+      layout_switch: LayoutSwitchBehavior::default(),
       animations: AnimationsConfig::default(),
     }
   }
@@ -638,6 +643,32 @@ pub struct WorkspaceConfig {
   /// Options for the BSP layout. Only read when `layout` is `'bsp'`.
   #[serde(default)]
   pub bsp: BspConfig,
+
+  /// What happens to the existing windows of the workspace when its
+  /// layout is switched. Defaults to `general.layout_switch`.
+  #[serde(default)]
+  pub layout_switch: Option<LayoutSwitchBehavior>,
+}
+
+/// What happens to the existing windows of a workspace when its layout
+/// is switched (via `set-layout`, `cycle-layout`, or a config reload).
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutSwitchBehavior {
+  /// Existing windows are rearranged into the new layout (e.g. switching
+  /// to `bsp` rebuilds them as a binary tree, and switching from `bsp`
+  /// to `scrolling` turns its windows into separate strip items).
+  #[default]
+  Reflow,
+
+  /// Existing windows keep their arrangement; only windows that are
+  /// added afterwards are placed per the new layout. Sizes are still
+  /// adjusted where the new layout requires it (e.g. strip items that
+  /// add up to more than the viewport are scaled down to fit when
+  /// switching to `tiling`).
+  Keep,
 }
 
 /// Layout that a workspace uses to arrange its tiling children.
@@ -747,6 +778,28 @@ pub struct ScrollConfig {
 
   /// Where new strip items are inserted.
   pub insert_position: ScrollInsertPosition,
+
+  /// How windows that are scrolled out of the viewport are kept out of
+  /// view.
+  pub offscreen_windows: OffscreenWindows,
+}
+
+/// How windows of a scrolling workspace that are scrolled out of the
+/// viewport are kept out of view.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OffscreenWindows {
+  /// Hidden with the configured hide method. Hidden windows aren't listed
+  /// in Alt+Tab.
+  #[default]
+  Hide,
+
+  /// Moved beyond the edges of all monitors while staying shown, so that
+  /// they remain listed in Alt+Tab and the taskbar. Focusing one (e.g.
+  /// via Alt+Tab) scrolls it into view.
+  Park,
 }
 
 impl ScrollConfig {
@@ -792,6 +845,7 @@ impl Default for ScrollConfig {
       preset_heights: vec![0.5, 1.0],
       align: ScrollAlign::Minimal,
       insert_position: ScrollInsertPosition::AfterFocused,
+      offscreen_windows: OffscreenWindows::default(),
     }
   }
 }

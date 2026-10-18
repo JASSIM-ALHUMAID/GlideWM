@@ -8,6 +8,7 @@ use crate::{
     container::set_focused_descendant, window::run_window_rules,
     workspace::focus_workspace,
   },
+  layouts,
   models::WorkspaceTarget,
   traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
@@ -83,6 +84,17 @@ pub fn handle_window_focused(
 
     // Update the WM's focus state.
     set_focused_descendant(&window.clone().into(), None);
+
+    // Scroll the window into view (e.g. a window of a scrolling workspace
+    // that's parked off-screen and was picked via Alt+Tab).
+    if layouts::scrolling::ensure_descendant_visible(
+      &workspace,
+      &window.clone().into(),
+    )? {
+      state
+        .pending_sync
+        .queue_container_to_redraw(workspace.clone());
+    }
 
     // Run window rules for focus events.
     run_window_rules(

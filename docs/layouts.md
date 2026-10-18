@@ -65,7 +65,7 @@ module.
 | `supports_scrolling` | Whether scroll behavior (e.g. the `scroll` command) applies | `false` | `true` | `false` |
 | `clips_children_to_viewport` | Whether hit tests must be limited to the viewport | `false` | `true` | `false` |
 | `window_placement` | Rect to position a window at + whether it is scrolled out | Natural rect | Clamped just beyond the viewport + `is_scrolled_out` | Natural rect |
-| `on_layout_changed` | State updates after a runtime layout switch | Rescale sizes to fill the viewport | Normalize sizes/scroll position | Rebuild a balanced binary tree |
+| `on_layout_changed` | State updates after a runtime layout switch (rearranging only with `layout_switch: reflow`) | Rescale sizes to fill the viewport | Normalize sizes/scroll position (`reflow`: dissolve a BSP root split) | `reflow`: rebuild a balanced binary tree; `keep`: rescale sizes |
 | `on_workspace_config_reloaded` | State updates after a config reload changed a workspace | Nothing | Apply the config's axis; normalize on a layout switch | Nothing |
 
 Notes:

@@ -29,11 +29,19 @@
 //! thumbnail and reports `Removed`. When the tween ends with the window
 //! hidden, the thumbnail is removed right away.
 //!
+//! Animations that are begun in the same sync pass form a group (e.g. the
+//! windows of a workspace switch, or the windows reflowing around a new
+//! window). The tweens of a group start together once every animation of
+//! the group is ready, so that the windows move in unison.
+//!
 //! Every wait has a timeout. When an animation can't continue (e.g. a
 //! thumbnail can't be registered), `Aborted` is reported and the main
 //! thread applies the window's final state without animating it.
 
-use std::time::{Duration, Instant};
+use std::{
+  collections::HashSet,
+  time::{Duration, Instant},
+};
 
 use uuid::Uuid;
 use wm_platform::{Rect, ThumbnailFrame, WindowId};
@@ -71,6 +79,12 @@ const UNCLOAK_TIMEOUT: Duration = Duration::from_millis(250);
 /// nudge the geometry they're given (e.g. rounding sizes to DPI).
 const SETTLE_TOLERANCE_PX: i32 = 2;
 
+/// Number of consecutive frames that a hidden window's frame must stay
+/// unchanged to count as positioned, when it doesn't match the expected
+/// position (e.g. an application that enforces a minimum size or snaps
+/// its size to a grid).
+const SETTLE_STABLE_FRAMES: u32 = 3;
+
 /// How an animation starts.
 #[derive(Clone, Debug)]
 pub enum StartFrame {
@@ -95,6 +109,9 @@ pub struct BeginRequest {
 
   /// Handle of the native window to animate.
   pub handle: WindowId,
+
+  /// Group of the animation. The tweens of a group start together.
+  pub group: u64,
 
   pub start: StartFrame,
   pub target: Target,
@@ -196,7 +213,18 @@ enum Phase {
     from: Frame,
     settle: Rect,
     since: Instant,
+
+    /// Frame of the window as of the previous composition frame.
+    last_frame: Option<Rect>,
+
+    /// Number of consecutive frames that the window's frame didn't
+    /// change.
+    stable_frames: u32,
   },
+
+  /// The thumbnail is drawn at `start`, waiting for the other animations
+  /// of its group to be ready.
+  Ready { start: Frame },
 
   /// The tween is in flight.
   Running { tween: Tween },
@@ -219,6 +247,7 @@ struct Animation<Id> {
   window_id: Uuid,
   sequence: u64,
   handle: WindowId,
+  group: u64,
   target: Target,
   thumbnail: Option<Id>,
   phase: Phase,
@@ -262,14 +291,9 @@ impl<B: ThumbnailBackend> Worker<B> {
       } => {
         if let Some(animation) = self.find(window_id, sequence) {
           if let Phase::Covering { start, .. } = &animation.phase {
-            let tween = Tween::new(
-              start.clone(),
-              animation.target.to.clone(),
-              now,
-              animation.target.timing,
-            );
-
-            animation.phase = Phase::Running { tween };
+            animation.phase = Phase::Ready {
+              start: start.clone(),
+            };
           }
         }
       }
@@ -289,8 +313,8 @@ impl<B: ThumbnailBackend> Worker<B> {
             _ => {}
           }
 
-          // Covering and settling animations pick up the new target once
-          // their tween starts.
+          // Animations whose tween hasn't started pick up the new target
+          // once it starts.
           animation.target = target;
         }
       }
@@ -316,6 +340,8 @@ impl<B: ThumbnailBackend> Worker<B> {
     now: Instant,
     emit: &mut impl FnMut(AnimationUpdate),
   ) {
+    self.start_ready_groups(now);
+
     let mut index = 0;
 
     while index < self.animations.len() {
@@ -334,6 +360,44 @@ impl<B: ThumbnailBackend> Worker<B> {
 
     if self.is_idle() {
       self.backend.release_resources();
+    }
+  }
+
+  /// Starts the tweens of the groups whose animations are all ready.
+  fn start_ready_groups(&mut self, now: Instant) {
+    let pending_groups = self
+      .animations
+      .iter()
+      .filter(|animation| {
+        matches!(
+          animation.phase,
+          Phase::Covering { .. } | Phase::Settling { .. }
+        )
+      })
+      .map(|animation| animation.group)
+      .collect::<HashSet<_>>();
+
+    for animation in &mut self.animations {
+      if pending_groups.contains(&animation.group) {
+        continue;
+      }
+
+      if let Phase::Ready { start } = &animation.phase {
+        tracing::debug!(
+          "Starting window animation (id={}, group={}).",
+          animation.window_id,
+          animation.group
+        );
+
+        animation.phase = Phase::Running {
+          tween: Tween::new(
+            start.clone(),
+            animation.target.to.clone(),
+            now,
+            animation.target.timing,
+          ),
+        };
+      }
     }
   }
 
@@ -440,14 +504,17 @@ impl<B: ThumbnailBackend> Worker<B> {
           from,
           settle,
           since: now,
+          last_frame: None,
+          stable_frames: 0,
         },
         None,
       ),
     };
 
     tracing::debug!(
-      "Animating window (id={}) to {:?}.",
+      "Animating window (id={}, group={}) to {:?}.",
       request.window_id,
+      request.group,
       request.target.to
     );
 
@@ -455,6 +522,7 @@ impl<B: ThumbnailBackend> Worker<B> {
       window_id: request.window_id,
       sequence: request.sequence,
       handle: request.handle,
+      group: request.group,
       target: request.target,
       thumbnail,
       phase,
@@ -507,20 +575,39 @@ impl<B: ThumbnailBackend> Worker<B> {
         from,
         settle,
         since,
+        last_frame,
+        stable_frames,
       } => {
-        let is_settled = self
-          .backend
-          .window_frame(animation.handle)
-          .is_some_and(|frame| is_near(&frame, settle));
+        let current_frame = self.backend.window_frame(animation.handle);
 
-        if !is_settled
-          && now.saturating_duration_since(*since) < SETTLE_TIMEOUT
-        {
-          return None;
+        let is_at_target = current_frame
+          .as_ref()
+          .is_some_and(|frame| is_near(frame, settle));
+
+        if current_frame.is_some() && current_frame == *last_frame {
+          *stable_frames += 1;
+        } else {
+          *stable_frames = 0;
+        }
+
+        *last_frame = current_frame;
+
+        let is_timed_out =
+          now.saturating_duration_since(*since) >= SETTLE_TIMEOUT;
+
+        if !is_at_target && *stable_frames < SETTLE_STABLE_FRAMES {
+          if !is_timed_out {
+            return None;
+          }
+
+          tracing::debug!(
+            "Window didn't reach its position in time: {window_id}"
+          );
         }
 
         let from = from.clone();
         let handle = animation.handle;
+        let clip = animation.target.clip.clone();
 
         let thumbnail = match self.backend.register(handle) {
           Ok(thumbnail) => thumbnail,
@@ -530,19 +617,18 @@ impl<B: ThumbnailBackend> Worker<B> {
           }
         };
 
-        let animation = &mut self.animations[index];
-        animation.thumbnail = Some(thumbnail);
-        animation.phase = Phase::Running {
-          tween: Tween::new(
-            from,
-            animation.target.to.clone(),
-            now,
-            animation.target.timing,
-          ),
-        };
+        self.animations[index].thumbnail = Some(thumbnail);
 
-        self.draw_running(index, now, emit)
+        if let Err(err) = self.draw(thumbnail, &from, clip.as_ref()) {
+          tracing::warn!("Failed to draw window thumbnail: {err}");
+          return Some(aborted);
+        }
+
+        self.animations[index].phase = Phase::Ready { start: from };
+
+        None
       }
+      Phase::Ready { .. } => None,
       Phase::Running { .. } => self.draw_running(index, now, emit),
       Phase::AwaitingReveal { since } => {
         if now.saturating_duration_since(*since) > REVEAL_TIMEOUT {
@@ -915,6 +1001,7 @@ mod tests {
       window_id,
       sequence: 1,
       handle: HANDLE,
+      group: 1,
       start,
       target,
     })
@@ -999,6 +1086,7 @@ mod tests {
       window_id: id,
       sequence: 1,
     });
+    harness.frame(0);
 
     harness.frame(50);
     assert_eq!(harness.last_destination(), rect(250));
@@ -1050,6 +1138,7 @@ mod tests {
       window_id: id,
       sequence: 1,
     });
+    harness.frame(0);
     harness.take_updates();
 
     harness.frame(100);
@@ -1132,6 +1221,7 @@ mod tests {
       window_id: id,
       sequence: 1,
     });
+    harness.frame(0);
     harness.frame(50);
     assert_eq!(harness.last_destination(), rect(250));
 
@@ -1145,6 +1235,95 @@ mod tests {
     // Continues from the current frame towards the new target.
     harness.frame(50);
     assert_eq!(harness.last_destination(), rect(750));
+  }
+
+  #[test]
+  fn starts_tweens_of_group_together() {
+    let covered_id = Uuid::new_v4();
+    let entering_id = Uuid::new_v4();
+    let entering_handle = WindowId(7);
+    let mut harness = Harness::new();
+    harness
+      .worker
+      .backend
+      .frames
+      .insert(entering_handle, rect(300));
+
+    harness.send(begin(
+      covered_id,
+      StartFrame::Cover,
+      target(-500, false),
+    ));
+    harness.send(WorkerCommand::Begin(BeginRequest {
+      window_id: entering_id,
+      sequence: 1,
+      handle: entering_handle,
+      group: 1,
+      start: StartFrame::Hidden {
+        from: Frame::opaque(rect(1000)),
+        settle: rect(300),
+      },
+      target: target(300, true),
+    }));
+
+    // The entering window is ready right away, but waits for the covered
+    // window of its group to be released.
+    harness.frame(16);
+    harness.frame(50);
+    assert_eq!(harness.last_destination(), rect(1000));
+
+    harness.send(WorkerCommand::Release {
+      window_id: covered_id,
+      sequence: 1,
+    });
+    harness.frame(0);
+    harness.frame(50);
+
+    // Both tweens are halfway done.
+    let destinations = harness
+      .worker
+      .backend
+      .updates
+      .iter()
+      .rev()
+      .take(2)
+      .map(|(_, frame)| frame.destination.clone())
+      .collect::<Vec<_>>();
+
+    assert!(destinations.contains(&rect(-250)));
+    assert!(destinations.contains(&rect(650)));
+  }
+
+  #[test]
+  fn starts_settled_window_with_adjusted_size() {
+    let id = Uuid::new_v4();
+    let mut harness = Harness::new();
+
+    // The application keeps its window slightly larger than requested.
+    harness
+      .worker
+      .backend
+      .frames
+      .insert(HANDLE, Rect::from_xy(300, 0, 120, 100));
+
+    harness.send(begin(
+      id,
+      StartFrame::Hidden {
+        from: Frame::opaque(rect(2000)),
+        settle: rect(300),
+      },
+      target(300, true),
+    ));
+
+    for _ in 0..SETTLE_STABLE_FRAMES {
+      harness.frame(16);
+      assert!(harness.worker.backend.registered.is_empty());
+    }
+
+    // Once the frame is stable, the window counts as positioned well
+    // before the settle timeout.
+    harness.frame(16);
+    assert_eq!(harness.worker.backend.registered.len(), 1);
   }
 
   #[test]

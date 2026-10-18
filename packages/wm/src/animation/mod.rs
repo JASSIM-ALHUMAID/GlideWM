@@ -140,8 +140,17 @@ pub struct UpdateOutcome {
 pub struct RedrawInput<'a> {
   pub placement: &'a WindowPlacement,
   pub previous_display_state: &'a DisplayState,
+
+  /// Whether the window itself is shown after the redraw. Unlike the
+  /// placement, this is `true` for windows that are parked off-screen.
+  pub is_visible: bool,
+
   pub switches: &'a HashMap<Uuid, WorkspaceSwitch>,
   pub z_order: &'a WindowZOrder,
+
+  /// Viewport of the window's workspace, which windows scrolling into or
+  /// out of view are clipped to.
+  pub viewport: Option<Rect>,
 }
 
 /// Phase of an animation, as seen by the main thread.
@@ -168,6 +177,11 @@ struct Slot {
 
   /// Position to apply once the thumbnail covers the window.
   deferred_position: Option<DeferredPosition>,
+
+  /// Whether the window is shown once its thumbnail is removed, although
+  /// the animation ends out of view (e.g. a window that's parked
+  /// off-screen when it's scrolled out of view).
+  reveal_on_removal: bool,
 }
 
 /// Animation state managed on the main thread.
@@ -185,8 +199,9 @@ pub struct Animations {
   cloaked_for_open: HashMap<Uuid, WindowId>,
 
   /// Windows that were scrolled out of the viewport of their workspace
-  /// as of their last redraw.
-  scrolled_out: HashSet<Uuid>,
+  /// as of their last redraw, along with where they appeared (clamped
+  /// just beyond the viewport's edge).
+  scrolled_out: HashMap<Uuid, Rect>,
 
   /// Windows whose next redraw must not be animated (e.g. after an
   /// aborted animation).
@@ -199,6 +214,10 @@ pub struct Animations {
   /// Whether the current sync pass is the first one. Windows that exist
   /// when the WM starts are tiled without animating them.
   is_initial_pass: bool,
+
+  /// Number of the current sync pass. Animations begun in the same pass
+  /// form a group whose tweens start together.
+  sync_pass: u64,
 
   /// Sequence number for the next animation.
   next_sequence: u64,
@@ -246,10 +265,11 @@ impl Animations {
       slots: HashMap::new(),
       pending_open: HashSet::new(),
       cloaked_for_open: HashMap::new(),
-      scrolled_out: HashSet::new(),
+      scrolled_out: HashMap::new(),
       suppressed: HashSet::new(),
       displayed_workspaces: HashMap::new(),
       is_initial_pass: true,
+      sync_pass: 0,
       next_sequence: 0,
       worker_tx: None,
       cloak: set_cloaked,
@@ -334,6 +354,7 @@ impl Animations {
     monitors: &[Monitor],
   ) -> HashMap<Uuid, WorkspaceSwitch> {
     self.is_initial_pass = self.displayed_workspaces.is_empty();
+    self.sync_pass += 1;
 
     let mut switches = HashMap::new();
 
@@ -397,8 +418,10 @@ impl Animations {
   ) -> Ownership {
     let window_id = window.id();
 
-    let was_scrolled_out = if input.placement.is_scrolled_out {
-      !self.scrolled_out.insert(window_id)
+    let scrolled_out_rect = if input.placement.is_scrolled_out {
+      self
+        .scrolled_out
+        .insert(window_id, input.placement.rect.clone())
     } else {
       self.scrolled_out.remove(&window_id)
     };
@@ -414,7 +437,7 @@ impl Animations {
 
     let plan_input = can_animate
       .then(|| {
-        self.plan_input(window, input, is_opening, was_scrolled_out)
+        self.plan_input(window, input, is_opening, scrolled_out_rect)
       })
       .flatten();
 
@@ -465,7 +488,7 @@ impl Animations {
     is_opening: bool,
   ) -> Ownership {
     let Some(plan_input) =
-      self.plan_input(window, input, is_opening, false)
+      self.plan_input(window, input, is_opening, None)
     else {
       return Ownership::None;
     };
@@ -478,14 +501,18 @@ impl Animations {
 
   /// Describes a window's transition for the planner.
   ///
-  /// Returns `None` if the window has no workspace or monitor.
+  /// `scrolled_out_rect` is where the window appeared if it was scrolled
+  /// out of view before the redraw. Returns `None` if the window has no
+  /// workspace or monitor.
   fn plan_input(
     &self,
     window: &WindowContainer,
     input: &RedrawInput,
     is_opening: bool,
-    was_scrolled_out: bool,
+    scrolled_out_rect: Option<Rect>,
   ) -> Option<PlanInput> {
+    let was_scrolled_out = scrolled_out_rect.is_some();
+
     let workspace = window.workspace()?;
     let monitor = window.monitor()?;
 
@@ -518,7 +545,8 @@ impl Animations {
             input.previous_display_state,
             DisplayState::Shown | DisplayState::Showing
           ),
-        window.native_properties().frame,
+        scrolled_out_rect
+          .unwrap_or_else(|| window.native_properties().frame),
       ),
     };
 
@@ -541,6 +569,7 @@ impl Animations {
       },
       current_rect,
       target_rect: input.placement.rect.clone(),
+      viewport: input.viewport.clone(),
       monitor_bounds: monitor.native_properties().bounds,
     })
   }
@@ -569,9 +598,24 @@ impl Animations {
           return Ownership::None;
         }
 
+        // Windows that are parked off-screen are shown, so they're hidden
+        // before being moved into place.
+        let is_shown = !is_opening
+          && matches!(
+            input.previous_display_state,
+            DisplayState::Shown | DisplayState::Showing
+          );
+
+        if is_shown {
+          if let Err(err) = (self.cloak)(handle, true) {
+            tracing::warn!("Failed to cloak window for animation: {err}");
+            return Ownership::None;
+          }
+        }
+
         let start = StartFrame::Hidden {
           from,
-          settle: input.placement.rect.clone(),
+          settle: input.placement.window_rect().clone(),
         };
 
         (start, SlotPhase::Running, Ownership::PositionOnly)
@@ -590,15 +634,18 @@ impl Animations {
       window_id,
       sequence,
       handle,
+      group: self.sync_pass,
       start,
       target: plan.target.clone(),
     }));
 
     let deferred_position =
       (phase == SlotPhase::Covering).then(|| DeferredPosition {
-        rect: input.placement.rect.clone(),
+        rect: input.placement.window_rect().clone(),
         z_order: input.z_order.clone(),
       });
+
+    let reveal_on_removal = !plan.target.end_visible && input.is_visible;
 
     self.slots.insert(
       window_id,
@@ -608,6 +655,7 @@ impl Animations {
         phase,
         target: plan.target,
         deferred_position,
+        reveal_on_removal,
       },
     );
 
@@ -665,7 +713,7 @@ impl Animations {
         window_id,
         sequence,
         target,
-        window_rect: input.placement.rect.clone(),
+        window_rect: input.placement.window_rect().clone(),
       });
     }
 
@@ -673,10 +721,12 @@ impl Animations {
       return Ownership::None;
     };
 
+    slot.reveal_on_removal = !slot.target.end_visible && input.is_visible;
+
     match slot.phase {
       SlotPhase::Covering => {
         slot.deferred_position = Some(DeferredPosition {
-          rect: input.placement.rect.clone(),
+          rect: input.placement.window_rect().clone(),
           z_order: input.z_order.clone(),
         });
 
@@ -761,7 +811,22 @@ impl Animations {
         UpdateOutcome::default()
       }
       AnimationUpdate::Removed { .. } => {
+        let (handle, reveal_on_removal) =
+          (slot.handle, slot.reveal_on_removal);
         self.slots.remove(&window_id);
+
+        if reveal_on_removal {
+          if let Err(err) = (self.cloak)(handle, false) {
+            tracing::warn!("Failed to reveal parked window: {err}");
+            self.suppressed.insert(window_id);
+
+            return UpdateOutcome {
+              position: None,
+              needs_redraw: true,
+            };
+          }
+        }
+
         UpdateOutcome::default()
       }
       AnimationUpdate::Aborted { .. } => self.abort(window_id),
@@ -940,10 +1005,13 @@ mod tests {
         placement: &WindowPlacement {
           rect,
           is_scrolled_out: false,
+          parked_rect: None,
         },
         previous_display_state: &DisplayState::Shown,
+        is_visible: true,
         switches: &HashMap::new(),
         z_order: &WindowZOrder::Normal,
+        viewport: None,
       },
       config,
     )
@@ -1144,6 +1212,86 @@ mod tests {
       Ownership::None
     );
     assert!(commands(&mut worker_rx).is_empty());
+  }
+
+  thread_local! {
+    /// Cloak calls made by `recording_cloak`, as `cloaked` values.
+    static CLOAK_CALLS: std::cell::RefCell<Vec<bool>> =
+      const { std::cell::RefCell::new(Vec::new()) };
+  }
+
+  #[allow(clippy::unnecessary_wraps)]
+  fn recording_cloak(
+    _handle: WindowId,
+    cloaked: bool,
+  ) -> anyhow::Result<()> {
+    CLOAK_CALLS.with(|calls| calls.borrow_mut().push(cloaked));
+    Ok(())
+  }
+
+  #[test]
+  fn reveals_parked_window_after_scrolling_it_out() {
+    let (mut animations, mut worker_rx) = animations();
+    animations.cloak = recording_cloak;
+    let window = window(&mut animations);
+
+    let clamped_rect =
+      mock_window_rect().translate_to_coordinates(2000, 0);
+    let parked_rect = mock_window_rect().translate_to_coordinates(9000, 0);
+
+    let ownership = animations.plan_redraw(
+      &window,
+      &RedrawInput {
+        placement: &WindowPlacement {
+          rect: clamped_rect,
+          is_scrolled_out: true,
+          parked_rect: Some(parked_rect.clone()),
+        },
+        previous_display_state: &DisplayState::Shown,
+        is_visible: true,
+        switches: &HashMap::new(),
+        z_order: &WindowZOrder::Normal,
+        viewport: None,
+      },
+      &config(),
+    );
+    assert_eq!(ownership, Ownership::Deferred);
+
+    let commands_sent = commands(&mut worker_rx);
+    let [WorkerCommand::Begin(begin)] = commands_sent.as_slice() else {
+      panic!("expected a single begin command, got {commands_sent:?}");
+    };
+    assert!(!begin.target.end_visible);
+    let sequence = begin.sequence;
+
+    // The window is hidden underneath its thumbnail and moved to where
+    // it's parked.
+    let outcome = animations.apply_update(
+      AnimationUpdate::Covered {
+        window_id: window.id(),
+        sequence,
+      },
+      Some(&window),
+    );
+    assert_eq!(
+      outcome.position.map(|position| position.rect),
+      Some(parked_rect)
+    );
+
+    // Once the thumbnail has slid out of view, the parked window is shown
+    // again, so that it stays listed in Alt+Tab.
+    animations.apply_update(
+      AnimationUpdate::Removed {
+        window_id: window.id(),
+        sequence,
+      },
+      Some(&window),
+    );
+
+    assert_eq!(
+      CLOAK_CALLS.with(std::cell::RefCell::take),
+      vec![true, false]
+    );
   }
 
   #[test]

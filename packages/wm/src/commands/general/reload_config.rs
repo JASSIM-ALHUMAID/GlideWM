@@ -145,6 +145,7 @@ fn update_workspace_configs(
             workspace,
             &prev_config,
             workspace_config,
+            layouts::layout_switch_behavior(workspace_config, config),
             state,
           )?;
 
@@ -252,6 +253,7 @@ mod tests {
         ..ScrollConfig::default()
       },
       bsp: BspConfig::default(),
+      layout_switch: None,
     }];
 
     config

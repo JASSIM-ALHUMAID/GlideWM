@@ -48,6 +48,7 @@ pub fn update_workspace_config(
     layout: current_config.layout.clone(),
     scroll: current_config.scroll.clone(),
     bsp: current_config.bsp.clone(),
+    layout_switch: current_config.layout_switch,
   };
 
   workspace.set_config(updated_config.clone());

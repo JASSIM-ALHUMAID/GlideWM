@@ -295,6 +295,7 @@ impl Workspace {
       layout,
       scroll,
       bsp,
+      layout_switch: None,
     };
 
     let workspace = Self::new(config, gaps_config, tiling_direction);

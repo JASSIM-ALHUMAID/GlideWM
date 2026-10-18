@@ -665,6 +665,7 @@ mod tests {
       &workspace,
       &WorkspaceLayout::Scrolling,
       &WorkspaceLayout::Bsp,
+      wm_common::LayoutSwitchBehavior::Reflow,
       &state,
     )
     .unwrap();
@@ -766,6 +767,7 @@ mod tests {
       &workspace,
       &WorkspaceLayout::Scrolling,
       &WorkspaceLayout::Bsp,
+      wm_common::LayoutSwitchBehavior::Reflow,
       &state,
     )
     .unwrap();
@@ -774,6 +776,7 @@ mod tests {
       &workspace,
       &WorkspaceLayout::Bsp,
       &WorkspaceLayout::Scrolling,
+      wm_common::LayoutSwitchBehavior::Reflow,
       &state,
     )
     .unwrap();
@@ -843,5 +846,89 @@ mod tests {
     assert_eq!(split.children()[1].id(), moving_window.id());
     assert!((windows[0].tiling_size() - 0.5).abs() < f32::EPSILON);
     assert!((moving_window.tiling_size() - 0.5).abs() < f32::EPSILON);
+  }
+
+  /// A displayed scrolling workspace with three strip items, each 70% of
+  /// the viewport.
+  fn mock_overflowing_strip() -> (Workspace, Vec<TilingWindow>, WmState) {
+    let workspace =
+      Workspace::mock().layout(WorkspaceLayout::Scrolling).call();
+
+    let windows = (0..3)
+      .map(|_| TilingWindow::mock().call())
+      .collect::<Vec<_>>();
+
+    for window in &windows {
+      attach_container(
+        &window.clone().into(),
+        &workspace.clone().into(),
+        None,
+      )
+      .unwrap();
+      window.set_tiling_size(0.7);
+    }
+
+    let monitor =
+      Monitor::mock().workspaces(vec![workspace.clone()]).call();
+
+    let state = WmState::mock();
+    attach_container(
+      &monitor.clone().into(),
+      &state.root_container.clone().into(),
+      None,
+    )
+    .unwrap();
+
+    (workspace, windows, state)
+  }
+
+  #[test]
+  fn keeps_arrangement_when_switching_to_bsp() {
+    let (workspace, windows, state) = mock_overflowing_strip();
+
+    crate::layouts::on_layout_changed(
+      &workspace,
+      &WorkspaceLayout::Scrolling,
+      &WorkspaceLayout::Bsp,
+      wm_common::LayoutSwitchBehavior::Keep,
+      &state,
+    )
+    .unwrap();
+
+    // The windows stay direct children of the workspace, and are scaled
+    // down to fill the viewport together.
+    assert_eq!(workspace.child_count(), 3);
+
+    for window in &windows {
+      assert_eq!(window.parent().unwrap().id(), workspace.id());
+      assert!((window.tiling_size() - 1. / 3.).abs() < 0.001);
+    }
+  }
+
+  #[test]
+  fn keeps_bsp_tree_when_switching_to_scrolling() {
+    let (workspace, _windows, state) = mock_overflowing_strip();
+
+    crate::layouts::on_layout_changed(
+      &workspace,
+      &WorkspaceLayout::Scrolling,
+      &WorkspaceLayout::Bsp,
+      wm_common::LayoutSwitchBehavior::Reflow,
+      &state,
+    )
+    .unwrap();
+
+    crate::layouts::on_layout_changed(
+      &workspace,
+      &WorkspaceLayout::Bsp,
+      &WorkspaceLayout::Scrolling,
+      wm_common::LayoutSwitchBehavior::Keep,
+      &state,
+    )
+    .unwrap();
+
+    // The tree stays a single strip item that fills the viewport.
+    assert_eq!(workspace.child_count(), 1);
+    assert!(workspace.children()[0].as_split().is_some());
   }
 }

@@ -41,7 +41,8 @@ pub(crate) mod tiling;
 
 use anyhow::Context;
 use wm_common::{
-  TilingDirection, WindowState, WorkspaceConfig, WorkspaceLayout,
+  LayoutSwitchBehavior, TilingDirection, WindowState, WorkspaceConfig,
+  WorkspaceLayout,
 };
 use wm_platform::{Direction, Rect};
 
@@ -61,14 +62,34 @@ use crate::{
 /// Rect to position a window at, paired with whether the layout has
 /// scrolled the window out of its workspace's viewport.
 pub struct WindowPlacement {
-  /// Rect (including border delta) to position the window at. The rect
-  /// of windows that are scrolled out of view is clamped just beyond
-  /// the edge of the viewport.
+  /// Rect (including border delta) where the window appears. The rect of
+  /// windows that are scrolled out of view is clamped just beyond the
+  /// edge of the viewport.
   pub rect: Rect,
 
   /// Whether the window is a tiling window that the layout has scrolled
   /// out of its workspace's viewport.
   pub is_scrolled_out: bool,
+
+  /// Rect beyond the edges of all monitors that a scrolled-out window is
+  /// parked at instead of being hidden (see `OffscreenWindows::Park`).
+  pub parked_rect: Option<Rect>,
+}
+
+impl WindowPlacement {
+  /// Rect to position the window itself at: the parked rect for parked
+  /// windows, and `rect` otherwise.
+  #[must_use]
+  pub fn window_rect(&self) -> &Rect {
+    self.parked_rect.as_ref().unwrap_or(&self.rect)
+  }
+
+  /// Whether the layout hides the window (i.e. it's scrolled out of view
+  /// and not parked).
+  #[must_use]
+  pub fn is_hidden_by_layout(&self) -> bool {
+    self.is_scrolled_out && self.parked_rect.is_none()
+  }
 }
 
 /// The layout of `container` when it is a direction container (i.e. a
@@ -515,6 +536,7 @@ pub fn window_placement(
   let is_positioned = || WindowPlacement {
     rect: rect.clone(),
     is_scrolled_out: false,
+    parked_rect: None,
   };
 
   let WindowContainer::TilingWindow(window) = window else {
@@ -531,6 +553,18 @@ pub fn window_placement(
   }
 }
 
+/// How the existing windows of a workspace are treated when its layout
+/// is switched: the workspace's own `layout_switch` config, falling back
+/// to `general.layout_switch`.
+pub fn layout_switch_behavior(
+  workspace_config: &WorkspaceConfig,
+  config: &UserConfig,
+) -> LayoutSwitchBehavior {
+  workspace_config
+    .layout_switch
+    .unwrap_or(config.value.general.layout_switch)
+}
+
 /// Adjusts a workspace's state after its layout was switched.
 ///
 /// The scrolling layout normalizes sizes and scroll position so that the
@@ -538,18 +572,27 @@ pub fn window_placement(
 /// of the workspace's children so that they fill the viewport; sizes set
 /// while the scrolling layout was active are viewport fractions that can
 /// sum to more than the full viewport (see the size semantics in
-/// `docs/scrolling-layout.md`). The BSP layout rebuilds the children as
-/// a balanced binary tree, since the tree is the structure of the layout
-/// itself.
+/// `docs/scrolling-layout.md`).
+///
+/// With [`LayoutSwitchBehavior::Reflow`], the existing children are also
+/// rearranged into the new layout: the BSP layout rebuilds them as a
+/// balanced binary tree (the tree is the structure of the layout
+/// itself), and switching from BSP to scrolling turns the windows of the
+/// tree into separate strip items. With [`LayoutSwitchBehavior::Keep`],
+/// the arrangement is left as-is and only sizes are adjusted where the
+/// new layout requires it.
 pub fn on_layout_changed(
   workspace: &Workspace,
   prev_layout: &WorkspaceLayout,
   new_layout: &WorkspaceLayout,
+  behavior: LayoutSwitchBehavior,
   state: &WmState,
 ) -> anyhow::Result<()> {
   if prev_layout == new_layout {
     return Ok(());
   }
+
+  let is_reflow = behavior == LayoutSwitchBehavior::Reflow;
 
   match new_layout {
     WorkspaceLayout::Tiling => {
@@ -561,13 +604,22 @@ pub fn on_layout_changed(
     WorkspaceLayout::Scrolling => {
       // The BSP tree's root split holds the entire mosaic; dissolve it
       // so that its children become individual strip items.
-      if prev_layout == &WorkspaceLayout::Bsp {
+      if is_reflow && prev_layout == &WorkspaceLayout::Bsp {
         bsp::collapse_root_split(workspace)?;
       }
 
       scrolling::normalize(workspace, state)
     }
-    WorkspaceLayout::Bsp => bsp::rebuild_tree(workspace),
+    WorkspaceLayout::Bsp => {
+      if is_reflow {
+        bsp::rebuild_tree(workspace)
+      } else {
+        // The BSP layout positions its tree like the tiling layout, so
+        // the existing children must fill the viewport.
+        tiling::normalize_sizes(workspace);
+        Ok(())
+      }
+    }
   }
 }
 
@@ -582,6 +634,7 @@ pub fn on_workspace_config_reloaded(
   workspace: &Workspace,
   prev_config: &WorkspaceConfig,
   new_config: &WorkspaceConfig,
+  behavior: LayoutSwitchBehavior,
   state: &WmState,
 ) -> anyhow::Result<()> {
   if prev_config.layout != new_config.layout {
@@ -593,6 +646,7 @@ pub fn on_workspace_config_reloaded(
       workspace,
       &prev_config.layout,
       &new_config.layout,
+      behavior,
       state,
     );
   }
@@ -672,6 +726,30 @@ mod tests {
 
     assert!((first.tiling_size() - 0.25).abs() < f32::EPSILON);
     assert!((second.tiling_size() - 0.75).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn resolves_layout_switch_behavior() {
+    let mut config = UserConfig::mock();
+    let mut workspace_config = Workspace::mock().call().config();
+
+    assert_eq!(
+      layout_switch_behavior(&workspace_config, &config),
+      LayoutSwitchBehavior::Reflow
+    );
+
+    config.value.general.layout_switch = LayoutSwitchBehavior::Keep;
+    assert_eq!(
+      layout_switch_behavior(&workspace_config, &config),
+      LayoutSwitchBehavior::Keep
+    );
+
+    // The workspace's own config takes precedence.
+    workspace_config.layout_switch = Some(LayoutSwitchBehavior::Reflow);
+    assert_eq!(
+      layout_switch_behavior(&workspace_config, &config),
+      LayoutSwitchBehavior::Reflow
+    );
   }
 
   #[test]

@@ -139,6 +139,7 @@ mod tests {
       layout: WorkspaceLayout::Scrolling,
       scroll: ScrollConfig::default(),
       bsp: BspConfig::default(),
+      layout_switch: None,
     }];
 
     config

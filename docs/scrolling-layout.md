@@ -138,6 +138,7 @@ workspaces:
       window_height: 0.5     # default height of new windows (vertical axis)
       preset_widths: [0.333, 0.5, 0.667, 1.0]  # `cycle-preset-size` sizes (horizontal axis)
       preset_heights: [0.5, 1.0]               # `cycle-preset-size` sizes (vertical axis)
+      offscreen_windows: hide  # 'hide' (default) | 'park' (stay in Alt+Tab, parked beyond all monitors)
       align: minimal         # 'minimal' (default, Niri-like) | 'center'
       insert_position: after_focused   # 'after_focused' | 'end'
 ```

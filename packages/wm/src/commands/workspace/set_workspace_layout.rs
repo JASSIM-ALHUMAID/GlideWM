@@ -1,4 +1,4 @@
-use wm_common::{WmEvent, WorkspaceLayout};
+use wm_common::{LayoutSwitchBehavior, WmEvent, WorkspaceLayout};
 
 use crate::{
   layouts, models::Workspace, traits::CommonGetters, wm_state::WmState,
@@ -15,6 +15,9 @@ use crate::{
 /// shares of the workspace (see the size semantics in
 /// `docs/scrolling-layout.md`).
 ///
+/// `behavior` decides whether the existing children are rearranged into
+/// the new layout (see [`layouts::on_layout_changed`]).
+///
 /// The updated config is recorded as a session override (see
 /// [`WmState::set_workspace_config_override`]), so that the switch
 /// survives the workspace being destroyed while empty.
@@ -25,6 +28,7 @@ use crate::{
 pub fn set_workspace_layout(
   workspace: &Workspace,
   layout: &WorkspaceLayout,
+  behavior: LayoutSwitchBehavior,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
   let prev_layout = workspace.config().layout;
@@ -38,7 +42,13 @@ pub fn set_workspace_layout(
   workspace.set_config(updated_config.clone());
   state.set_workspace_config_override(updated_config);
 
-  layouts::on_layout_changed(workspace, &prev_layout, layout, state)?;
+  layouts::on_layout_changed(
+    workspace,
+    &prev_layout,
+    layout,
+    behavior,
+    state,
+  )?;
 
   state
     .pending_sync
@@ -95,6 +105,7 @@ mod tests {
     set_workspace_layout(
       &workspace,
       &WorkspaceLayout::Scrolling,
+      LayoutSwitchBehavior::Reflow,
       &mut state,
     )
     .unwrap();
@@ -151,6 +162,7 @@ mod tests {
     set_workspace_layout(
       &workspace,
       &WorkspaceLayout::Scrolling,
+      LayoutSwitchBehavior::Reflow,
       &mut state,
     )
     .unwrap();
@@ -181,8 +193,13 @@ mod tests {
 
     let mut state = WmState::mock();
 
-    set_workspace_layout(&workspace, &WorkspaceLayout::Tiling, &mut state)
-      .unwrap();
+    set_workspace_layout(
+      &workspace,
+      &WorkspaceLayout::Tiling,
+      LayoutSwitchBehavior::Reflow,
+      &mut state,
+    )
+    .unwrap();
 
     assert_eq!(workspace.config().layout, WorkspaceLayout::Tiling);
 
@@ -210,8 +227,13 @@ mod tests {
 
     let mut state = WmState::mock();
 
-    set_workspace_layout(&workspace, &WorkspaceLayout::Tiling, &mut state)
-      .unwrap();
+    set_workspace_layout(
+      &workspace,
+      &WorkspaceLayout::Tiling,
+      LayoutSwitchBehavior::Reflow,
+      &mut state,
+    )
+    .unwrap();
 
     // The updated config is kept as a session override, so that the
     // switch survives the workspace being destroyed while empty.
@@ -229,8 +251,13 @@ mod tests {
 
     let mut state = WmState::mock();
 
-    set_workspace_layout(&workspace, &WorkspaceLayout::Tiling, &mut state)
-      .unwrap();
+    set_workspace_layout(
+      &workspace,
+      &WorkspaceLayout::Tiling,
+      LayoutSwitchBehavior::Reflow,
+      &mut state,
+    )
+    .unwrap();
 
     assert!(!state.pending_sync.has_changes());
   }

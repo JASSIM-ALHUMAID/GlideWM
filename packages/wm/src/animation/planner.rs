@@ -69,6 +69,10 @@ pub struct PlanInput {
 
   /// Bounds of the window's monitor.
   pub monitor_bounds: Rect,
+
+  /// Viewport of the window's workspace, which windows scrolling into or
+  /// out of view are clipped to. Defaults to the monitor bounds.
+  pub viewport: Option<Rect>,
 }
 
 /// How an animation starts.
@@ -260,6 +264,13 @@ fn plan_move(
   let timing =
     Timing::from_config(move_config.duration_ms, &move_config.curve);
 
+  // Windows scrolling into or out of view disappear at the edge of the
+  // viewport, like the windows that stay in it are cut off there.
+  let viewport = input
+    .viewport
+    .clone()
+    .unwrap_or_else(|| input.monitor_bounds.clone());
+
   // Scrolled out of view: slide to just beyond the viewport, then hide.
   if input.before.is_visible
     && !input.after.is_visible
@@ -269,7 +280,7 @@ fn plan_move(
       start: Start::Cover,
       target: Target {
         to: Frame::opaque(input.target_rect.clone()),
-        clip: Some(input.monitor_bounds.clone()),
+        clip: Some(viewport.clone()),
         timing,
         end_visible: false,
       },
@@ -288,7 +299,7 @@ fn plan_move(
       },
       target: Target {
         to: Frame::opaque(input.target_rect.clone()),
-        clip: Some(input.monitor_bounds.clone()),
+        clip: Some(viewport.clone()),
         timing,
         end_visible: true,
       },
@@ -372,6 +383,7 @@ mod tests {
       current_rect: Rect::from_xy(0, 0, 960, 1080),
       target_rect: Rect::from_xy(0, 0, 960, 1080),
       monitor_bounds: monitor(),
+      viewport: None,
     }
   }
 

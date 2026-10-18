@@ -9,8 +9,8 @@
 //! layout, and `docs/layouts.md` for how layouts fit into the codebase.
 
 use wm_common::{
-  ScrollAlign, ScrollConfig, ScrollInsertPosition, TilingDirection,
-  WindowState,
+  OffscreenWindows, ScrollAlign, ScrollConfig, ScrollInsertPosition,
+  TilingDirection, WindowState,
 };
 use wm_platform::{Direction, Rect};
 
@@ -359,6 +359,10 @@ pub(super) fn child_rect(
   })
 }
 
+/// Distance beyond the edge of the virtual screen that parked windows
+/// are moved to, so that their shadows stay off-screen too.
+const PARK_MARGIN_PX: i32 = 64;
+
 /// Applies positioning rules for a tiling window of a displayed
 /// scrolling workspace.
 ///
@@ -367,7 +371,9 @@ pub(super) fn child_rect(
 /// edge, and are reported as scrolled out. Clamping pairs with hiding
 /// the window in `redraw_containers`: cloaking guards against
 /// peek-through while the cloak is applied (see
-/// `docs/scrolling-layout.md` §5).
+/// `docs/scrolling-layout.md` §5). With `OffscreenWindows::Park`, the
+/// window is parked beyond the edges of all monitors instead of being
+/// hidden.
 pub(super) fn placement(
   window: &TilingWindow,
   rect: Rect,
@@ -375,6 +381,7 @@ pub(super) fn placement(
   let is_positioned = || WindowPlacement {
     rect: rect.clone(),
     is_scrolled_out: false,
+    parked_rect: None,
   };
 
   let Some(workspace) = window.workspace() else {
@@ -428,9 +435,60 @@ pub(super) fn placement(
     }
   };
 
+  let is_parked = is_scrolled_out
+    && workspace.config().scroll.offscreen_windows
+      == OffscreenWindows::Park;
+
+  let parked_rect = is_parked
+    .then(|| parked_rect(&workspace, &rect, &viewport_rect))
+    .flatten();
+
   Ok(WindowPlacement {
     rect,
     is_scrolled_out,
+    parked_rect,
+  })
+}
+
+/// Rect beyond the edges of all monitors to park a scrolled-out window
+/// at, on the side of the viewport that it's scrolled out of.
+///
+/// `clamped_rect` is the window's rect clamped just beyond the viewport's
+/// edge. Returns `None` if the workspace isn't attached to a monitor.
+fn parked_rect(
+  workspace: &Workspace,
+  clamped_rect: &Rect,
+  viewport_rect: &Rect,
+) -> Option<Rect> {
+  let Container::Root(root) = workspace.monitor()?.parent()? else {
+    return None;
+  };
+
+  let screen = root
+    .monitors()
+    .iter()
+    .map(|monitor| monitor.native_properties().bounds)
+    .reduce(|bounds, monitor_bounds| bounds.union(&monitor_bounds))?;
+
+  Some(match workspace.tiling_direction() {
+    TilingDirection::Horizontal => {
+      let x = if clamped_rect.left >= viewport_rect.right {
+        screen.right + PARK_MARGIN_PX
+      } else {
+        screen.left - clamped_rect.width() - PARK_MARGIN_PX
+      };
+
+      clamped_rect.translate_to_coordinates(x, clamped_rect.top)
+    }
+    TilingDirection::Vertical => {
+      let y = if clamped_rect.top >= viewport_rect.bottom {
+        screen.bottom + PARK_MARGIN_PX
+      } else {
+        screen.top - clamped_rect.height() - PARK_MARGIN_PX
+      };
+
+      clamped_rect.translate_to_coordinates(clamped_rect.left, y)
+    }
   })
 }
 
@@ -701,6 +759,71 @@ mod tests {
     let result = placement(window, rect).unwrap();
     assert!(!result.is_scrolled_out);
     assert_eq!(result.rect.x(), 1500);
+  }
+
+  #[test]
+  fn parks_scrolled_out_windows_beyond_all_monitors() {
+    let (workspace, windows) = mock_scrolling_workspace(
+      TilingDirection::Horizontal,
+      1,
+      0.5,
+      &GapsConfig::default(),
+      ScrollConfig {
+        offscreen_windows: OffscreenWindows::Park,
+        ..ScrollConfig::default()
+      },
+    );
+
+    // Parking needs the monitor setup, so the workspace's monitor is
+    // attached to the container tree.
+    let state = crate::wm_state::WmState::mock();
+    crate::commands::container::attach_container(
+      &workspace.parent().unwrap(),
+      &state.root_container.clone().into(),
+      None,
+    )
+    .unwrap();
+
+    let screen = workspace.monitor().unwrap().native_properties().bounds;
+    let window = &windows[0];
+
+    let result =
+      placement(window, Rect::from_xy(3000, 0, 840, 1000)).unwrap();
+    let parked = result.parked_rect.clone().unwrap();
+
+    // The window appears just beyond the viewport, but is parked beyond
+    // the edge of all monitors.
+    assert!(result.is_scrolled_out);
+    assert!(!result.is_hidden_by_layout());
+    assert_eq!(result.rect.x(), 1680);
+    assert!(parked.left > screen.right);
+    assert_eq!(result.window_rect(), &parked);
+
+    let result =
+      placement(window, Rect::from_xy(-2000, 0, 840, 1000)).unwrap();
+    assert!(result.parked_rect.unwrap().right < screen.left);
+
+    // Windows in view aren't parked.
+    let result =
+      placement(window, Rect::from_xy(0, 0, 840, 1000)).unwrap();
+    assert!(result.parked_rect.is_none());
+  }
+
+  #[test]
+  fn hides_scrolled_out_windows_by_default() {
+    let (_workspace, windows) = mock_scrolling_workspace(
+      TilingDirection::Horizontal,
+      1,
+      0.5,
+      &GapsConfig::default(),
+      ScrollConfig::default(),
+    );
+
+    let result =
+      placement(&windows[0], Rect::from_xy(3000, 0, 840, 1000)).unwrap();
+
+    assert!(result.parked_rect.is_none());
+    assert!(result.is_hidden_by_layout());
   }
 
   #[test]

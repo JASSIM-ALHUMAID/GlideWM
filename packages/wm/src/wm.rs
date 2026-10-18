@@ -46,6 +46,7 @@ use crate::{
     handle_window_title_changed,
   },
   ipc_server::IpcServer,
+  layouts,
   models::{Container, WorkspaceTarget},
   traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
@@ -631,7 +632,10 @@ impl WindowManager {
           subject_container.workspace().context("No workspace.")?
         };
 
-        set_workspace_layout(&workspace, layout, state)
+        let behavior =
+          layouts::layout_switch_behavior(&workspace.config(), config);
+
+        set_workspace_layout(&workspace, layout, behavior, state)
       }
       InvokeCommand::CycleLayout { workspace } => {
         let workspace = if let Some(workspace_name) = workspace {
@@ -644,7 +648,10 @@ impl WindowManager {
 
         let new_layout = workspace.config().layout.next();
 
-        set_workspace_layout(&workspace, &new_layout, state)
+        let behavior =
+          layouts::layout_switch_behavior(&workspace.config(), config);
+
+        set_workspace_layout(&workspace, &new_layout, behavior, state)
       }
       InvokeCommand::SetMinimized => {
         match subject_container.as_window_container() {

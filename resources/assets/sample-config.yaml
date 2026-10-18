@@ -40,6 +40,14 @@ general:
   # - 'false': Only show windows from the currently shown workspaces.
   show_all_in_taskbar: false
 
+  # What happens to the existing windows of a workspace when its layout is
+  # switched (via `set-layout`, `cycle-layout`, or a config reload). Can be
+  # overridden per workspace with `layout_switch`.
+  # - 'reflow': Existing windows are rearranged into the new layout.
+  # - 'keep': Existing windows keep their arrangement; only windows that
+  #   are added afterwards follow the new layout.
+  layout_switch: 'reflow'
+
   # Animate windows. Windows are animated via live compositor thumbnails,
   # so animations stay smooth regardless of how busy an application is.
   # Requires `hide_method: 'cloak'`. Minimize/restore/close animations
@@ -222,6 +230,14 @@ workspaces:
     #  # - 'after_focused': Insert directly after the focused window.
     #  # - 'end': Append to the end of the strip.
     #  insert_position: 'after_focused'
+    #  # How windows scrolled out of view are kept out of view:
+    #  # - 'hide': Hidden with the hide method (not listed in Alt+Tab).
+    #  # - 'park': Moved beyond the edges of all monitors while staying
+    #  #   shown, so they remain in Alt+Tab and the taskbar. Picking one
+    #  #   in Alt+Tab scrolls it into view.
+    #  offscreen_windows: 'hide'
+    # Overrides `general.layout_switch` for this workspace.
+    #layout_switch: 'keep'
     # Options for the BSP layout (only used when layout is 'bsp').
     #bsp:
     #  # How the direction of a new split is chosen:

@@ -295,21 +295,21 @@ fn redraw_containers(
 
     // Transition display state depending on whether window will be
     // shown or hidden. Scrolled-out windows are hidden by the scrolling
-    // layout itself, so they transition to `Hiding` here; otherwise
-    // `handle_window_hidden` would treat the hide as externally
-    // initiated and unmanage the window.
+    // layout itself (unless they're parked), so they transition to
+    // `Hiding` here; otherwise `handle_window_hidden` would treat the hide
+    // as externally initiated and unmanage the window.
     let previous_display_state = window.display_state();
 
     window.set_display_state(transition_display_state(
       previous_display_state.clone(),
       workspace.is_displayed(),
-      placement.is_scrolled_out,
+      placement.is_hidden_by_layout(),
     ));
 
     let is_visible = matches!(
       window.display_state(),
       DisplayState::Showing | DisplayState::Shown
-    ) && !placement.is_scrolled_out;
+    ) && !placement.is_hidden_by_layout();
 
     // Animated windows are hidden while a thumbnail of them animates in
     // their place (see `crate::animation`). The animation decides when
@@ -320,8 +320,10 @@ fn redraw_containers(
       &RedrawInput {
         placement: &placement,
         previous_display_state: &previous_display_state,
+        is_visible,
         switches,
         z_order: &z_order,
+        viewport: workspace.to_rect().ok(),
       },
       config,
     );
@@ -338,7 +340,7 @@ fn redraw_containers(
       Ownership::None => {
         if let Err(err) = reposition_window(
           window,
-          placement,
+          &placement,
           *hide_corner,
           &z_order,
           is_visible,
@@ -349,7 +351,7 @@ fn redraw_containers(
       }
       Ownership::PositionOnly => {
         if let Err(err) =
-          apply_window_frame(window, &placement.rect, &z_order)
+          apply_window_frame(window, placement.window_rect(), &z_order)
         {
           tracing::warn!("Failed to set window position: {}", err);
         }
@@ -431,7 +433,7 @@ fn transition_display_state(
 
 fn reposition_window(
   window: &WindowContainer,
-  placement: layouts::WindowPlacement,
+  placement: &layouts::WindowPlacement,
   hide_corner: HideCorner,
   // LINT: `z_order` is only used on Windows.
   #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
@@ -439,7 +441,7 @@ fn reposition_window(
   is_visible: bool,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
-  let rect = placement.rect;
+  let rect = placement.window_rect().clone();
 
   // For `HideMethod::PlaceInCorner`, we need to reposition hidden windows
   // to the corner of the monitor.
