@@ -567,6 +567,14 @@ impl NativeWindow {
     self.inner.reposition(x, y)
   }
 
+  /// Minimizes the window.
+  ///
+  /// # Platform-specific
+  ///
+  /// - **Windows**: Minimizes the same way as the window's minimize button
+  ///   (`WM_SYSCOMMAND` with `SC_MINIMIZE`), so the app handles it like a
+  ///   minimize by the user. Apps that minimize to the tray do that here
+  ///   too.
   pub fn minimize(&self) -> crate::Result<()> {
     self.inner.minimize()
   }

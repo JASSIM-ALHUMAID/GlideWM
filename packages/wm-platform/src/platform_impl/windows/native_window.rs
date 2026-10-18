@@ -5,7 +5,7 @@ use tracing::warn;
 use windows::{
   core::{w, PCWSTR, PWSTR},
   Win32::{
-    Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT, RECT},
+    Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT, RECT, WPARAM},
     Graphics::Dwm::{
       DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR,
       DWMWA_CLOAKED, DWMWA_COLOR_NONE, DWMWA_EXTENDED_FRAME_BOUNDS,
@@ -28,19 +28,19 @@ use windows::{
         GetForegroundWindow, GetLayeredWindowAttributes, GetPropW,
         GetShellWindow, GetWindow, GetWindowLongPtrW, GetWindowRect,
         GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow,
-        IsWindowVisible, IsZoomed, SendNotifyMessageW,
+        IsWindowVisible, IsZoomed, PostMessageW, SendNotifyMessageW,
         SetForegroundWindow, SetLayeredWindowAttributes,
         SetWindowLongPtrW, SetWindowPlacement, SetWindowPos,
         ShowWindowAsync, WindowFromPoint, GA_ROOT, GWL_EXSTYLE, GWL_STYLE,
         GW_OWNER, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST,
         LAYERED_WINDOW_ATTRIBUTES_FLAGS, LWA_ALPHA, LWA_COLORKEY,
-        SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
-        SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE, SWP_NOOWNERZORDER,
-        SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-        SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWNA,
-        WINDOWPLACEMENT, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE,
-        WPF_ASYNCWINDOWPLACEMENT, WS_DLGFRAME, WS_EX_LAYERED,
-        WS_THICKFRAME,
+        SC_MINIMIZE, SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE,
+        SWP_NOOWNERZORDER, SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER,
+        SWP_SHOWWINDOW, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
+        SW_SHOWNA, WINDOWPLACEMENT, WINDOW_EX_STYLE, WINDOW_STYLE,
+        WM_CLOSE, WM_SYSCOMMAND, WPF_ASYNCWINDOWPLACEMENT, WS_DLGFRAME,
+        WS_EX_LAYERED, WS_THICKFRAME,
       },
     },
   },
@@ -312,7 +312,25 @@ impl NativeWindow {
 
   /// Implements [`NativeWindow::minimize`].
   pub(crate) fn minimize(&self) -> crate::Result<()> {
-    unsafe { ShowWindowAsync(self.hwnd(), SW_MINIMIZE).ok() }?;
+    // Minimize the same way as the window's minimize button, so that the
+    // app (and tools hooked into it, such as minimize animations) handle
+    // it like a minimize by the user.
+    // SAFETY: Posting a message has no memory-safety requirements; an
+    // invalid handle makes the call fail.
+    let posted = unsafe {
+      PostMessageW(
+        self.hwnd(),
+        WM_SYSCOMMAND,
+        WPARAM(SC_MINIMIZE as usize),
+        LPARAM(0),
+      )
+    };
+
+    // Posting fails for windows of higher integrity without UI access.
+    if posted.is_err() {
+      unsafe { ShowWindowAsync(self.hwnd(), SW_MINIMIZE).ok() }?;
+    }
+
     Ok(())
   }
 
