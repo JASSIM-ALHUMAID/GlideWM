@@ -4,6 +4,7 @@ use wm_common::{try_warn, WindowRuleEvent, WindowState, WmEvent};
 use wm_platform::{NativeWindow, RectDelta};
 
 use crate::{
+  animation::is_cloaked_by_external_animation,
   commands::{
     container::{attach_container, set_focused_descendant},
     window::run_window_rules,
@@ -100,7 +101,11 @@ pub fn manage_window(
 fn check_is_manageable(
   native_window: &NativeWindow,
 ) -> anyhow::Result<Option<NativeWindowProperties>> {
-  if !native_window.is_visible()? {
+  // Windows that an external tool cloaked for its open animation are
+  // managed right away, so that they're placed before they're revealed.
+  if !native_window.is_visible()?
+    && !is_cloaked_by_external_animation(native_window)
+  {
     return Ok(None);
   }
 

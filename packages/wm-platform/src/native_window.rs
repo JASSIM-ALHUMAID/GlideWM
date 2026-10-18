@@ -257,6 +257,19 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn has_visible_style(&self) -> bool;
 
+  /// Whether an external animation tool has cloaked the window for a
+  /// short animation (e.g. the Windhawk "Hyprland Animations" mod playing
+  /// an open or minimize animation).
+  ///
+  /// Such tools mark the window with the `WindhawkAnimations.Concealed`
+  /// window property while it's cloaked. The window should stay managed,
+  /// and the tool owns its animation.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn is_cloaked_by_external_animation(&self) -> bool;
+
   /// Marks the window as fullscreen.
   ///
   /// Causes the native Windows taskbar to be moved to the bottom of the
@@ -398,6 +411,10 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn has_visible_style(&self) -> bool {
     self.inner.has_visible_style()
+  }
+
+  fn is_cloaked_by_external_animation(&self) -> bool {
+    self.inner.is_cloaked_by_external_animation()
   }
 
   fn mark_fullscreen(&self, fullscreen: bool) -> crate::Result<()> {

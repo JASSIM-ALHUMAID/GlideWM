@@ -3,6 +3,7 @@ use wm_common::{DisplayState, HideMethod};
 use wm_platform::NativeWindow;
 
 use crate::{
+  animation::is_cloaked_by_external_animation,
   commands::window::unmanage_window,
   traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
@@ -31,9 +32,12 @@ pub fn handle_window_hidden(
     // thumbnail animates in their place. The hidden event that the cloak
     // produces is not an external hide of the window (e.g. to the tray),
     // so the window must stay managed. Windows that are actually hidden
-    // while they're animated lose their visible style.
-    let is_cloaked_by_animation = state.animations.owns_cloak(window.id())
-      && has_visible_style(&window.native());
+    // while they're animated lose their visible style. The same applies
+    // to windows that an external tool cloaks for its own animation.
+    let is_cloaked_by_animation =
+      (state.animations.owns_cloak(window.id())
+        && has_visible_style(&window.native()))
+        || is_cloaked_by_external_animation(&window.native());
 
     // Unmanage the window if it's not in a display state transition. Also,
     // since window events are not 100% guaranteed to be in correct order,

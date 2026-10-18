@@ -85,7 +85,9 @@ general:
       curve: [0.22, 1.0, 0.36, 1.0]
 
     # Animation to play when a window is first shown (e.g. an application
-    # that's launched).
+    # that's launched). Windows that an external tool animates (marked with
+    # the `WindhawkAnimations.Concealed` window property, e.g. by the
+    # Windhawk "Hyprland Animations" mod) are left to that tool.
     window_open:
       # - 'none': No animation.
       # - 'slide': Window slides in from the right edge of the monitor.

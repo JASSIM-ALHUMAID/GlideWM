@@ -316,8 +316,10 @@ impl Animations {
     let open_config = &config.value.general.animations.window_open;
 
     // Apps are allowed to ignore position updates while fullscreen (e.g.
-    // games), so fullscreen windows aren't animated on open.
+    // games), so fullscreen windows aren't animated on open. Windows that
+    // an external tool animates open are left to that tool.
     let will_animate = self.is_available(config)
+      && !is_cloaked_by_external_animation(&window.native())
       && !matches!(
         window.state(),
         WindowState::Minimized | WindowState::Fullscreen(_)
@@ -433,7 +435,8 @@ impl Animations {
       && !self.is_initial_pass
       && self.is_available(config)
       && window.state() != WindowState::Minimized
-      && window.active_drag().is_none();
+      && window.active_drag().is_none()
+      && !is_cloaked_by_external_animation(&window.native());
 
     let plan_input = can_animate
       .then(|| {
@@ -992,6 +995,26 @@ fn positioned_frame(window: &WindowContainer) -> Rect {
 #[cfg(not(target_os = "windows"))]
 fn positioned_frame(window: &WindowContainer) -> Rect {
   window.native_properties().frame
+}
+
+/// Whether an external tool (e.g. the Windhawk "Hyprland Animations" mod)
+/// has cloaked the window for its own animation. Such windows stay
+/// managed, and aren't animated by the WM until the tool is done.
+#[cfg(target_os = "windows")]
+pub fn is_cloaked_by_external_animation(
+  native_window: &wm_platform::NativeWindow,
+) -> bool {
+  use wm_platform::NativeWindowWindowsExt;
+
+  native_window.is_cloaked_by_external_animation()
+}
+
+/// Windows can't be cloaked on other platforms.
+#[cfg(not(target_os = "windows"))]
+pub fn is_cloaked_by_external_animation(
+  _native_window: &wm_platform::NativeWindow,
+) -> bool {
+  false
 }
 
 /// Cloaks or uncloaks the window with the given handle.

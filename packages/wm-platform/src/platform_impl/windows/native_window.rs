@@ -3,18 +3,21 @@ use std::time::Duration;
 use tokio::task;
 use tracing::warn;
 use windows::{
-  core::PWSTR,
+  core::{w, PCWSTR, PWSTR},
   Win32::{
     Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT, RECT},
     Graphics::Dwm::{
       DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR,
       DWMWA_CLOAKED, DWMWA_COLOR_NONE, DWMWA_EXTENDED_FRAME_BOUNDS,
       DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT, DWMWCP_DONOTROUND,
-      DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
+      DWMWCP_ROUND, DWMWCP_ROUNDSMALL, DWM_CLOAKED_APP,
     },
-    System::Threading::{
-      OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-      PROCESS_QUERY_LIMITED_INFORMATION,
+    System::{
+      SystemInformation::GetTickCount,
+      Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+      },
     },
     UI::{
       Input::KeyboardAndMouse::{
@@ -22,20 +25,21 @@ use windows::{
       },
       WindowsAndMessaging::{
         EnumWindows, GetAncestor, GetClassNameW, GetDesktopWindow,
-        GetForegroundWindow, GetLayeredWindowAttributes, GetShellWindow,
-        GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextW,
-        GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible,
-        IsZoomed, SendNotifyMessageW, SetForegroundWindow,
-        SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPlacement,
-        SetWindowPos, ShowWindowAsync, WindowFromPoint, GA_ROOT,
-        GWL_EXSTYLE, GWL_STYLE, GW_OWNER, HWND_NOTOPMOST, HWND_TOP,
-        HWND_TOPMOST, LAYERED_WINDOW_ATTRIBUTES_FLAGS, LWA_ALPHA,
-        LWA_COLORKEY, SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS,
-        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE,
-        SWP_NOOWNERZORDER, SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER,
-        SWP_SHOWWINDOW, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
-        SW_SHOWNA, WINDOWPLACEMENT, WINDOW_EX_STYLE, WINDOW_STYLE,
-        WM_CLOSE, WPF_ASYNCWINDOWPLACEMENT, WS_DLGFRAME, WS_EX_LAYERED,
+        GetForegroundWindow, GetLayeredWindowAttributes, GetPropW,
+        GetShellWindow, GetWindow, GetWindowLongPtrW, GetWindowRect,
+        GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow,
+        IsWindowVisible, IsZoomed, SendNotifyMessageW,
+        SetForegroundWindow, SetLayeredWindowAttributes,
+        SetWindowLongPtrW, SetWindowPlacement, SetWindowPos,
+        ShowWindowAsync, WindowFromPoint, GA_ROOT, GWL_EXSTYLE, GWL_STYLE,
+        GW_OWNER, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST,
+        LAYERED_WINDOW_ATTRIBUTES_FLAGS, LWA_ALPHA, LWA_COLORKEY,
+        SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE, SWP_NOOWNERZORDER,
+        SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+        SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWNA,
+        WINDOWPLACEMENT, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE,
+        WPF_ASYNCWINDOWPLACEMENT, WS_DLGFRAME, WS_EX_LAYERED,
         WS_THICKFRAME,
       },
     },
@@ -47,6 +51,15 @@ use crate::{
   Color, CornerStyle, Delta, Dispatcher, LengthValue, OpacityValue, Point,
   Rect, RectDelta, WindowId, WindowZOrder,
 };
+
+/// Window property that external animation tools (e.g. the Windhawk
+/// "Hyprland Animations" mod) set while they cloak a window to animate it.
+/// Its value is the `GetTickCount` time at which the window was cloaked.
+const EXTERNAL_ANIMATION_PROP: PCWSTR = w!("WindhawkAnimations.Concealed");
+
+/// Age after which an external animation marker is considered stale (e.g.
+/// left behind by a tool that crashed mid-animation).
+const EXTERNAL_ANIMATION_MAX_AGE_MS: u32 = 10_000;
 
 /// Magic number used to identify programmatic mouse inputs from our own
 /// process.
@@ -169,6 +182,29 @@ impl NativeWindow {
   /// Implements [`NativeWindowWindowsExt::has_visible_style`].
   pub(crate) fn has_visible_style(&self) -> bool {
     unsafe { IsWindowVisible(self.hwnd()) }.as_bool()
+  }
+
+  /// Implements
+  /// [`NativeWindowWindowsExt::is_cloaked_by_external_animation`].
+  pub(crate) fn is_cloaked_by_external_animation(&self) -> bool {
+    // SAFETY: `GetPropW` only reads the window's property list, and
+    // returns a null handle for windows that no longer exist.
+    let marker = unsafe { GetPropW(self.hwnd(), EXTERNAL_ANIMATION_PROP) };
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let cloaked_at = marker.0 as u32;
+    if cloaked_at == 0 {
+      return false;
+    }
+
+    // SAFETY: `GetTickCount` has no preconditions.
+    let age_ms = unsafe { GetTickCount() }.wrapping_sub(cloaked_at);
+
+    age_ms < EXTERNAL_ANIMATION_MAX_AGE_MS
+      && self.has_visible_style()
+      && self
+        .cloak_flags()
+        .is_ok_and(|flags| flags & DWM_CLOAKED_APP != 0)
   }
 
   /// Implements [`NativeWindow::is_visible`].
@@ -725,6 +761,12 @@ impl NativeWindow {
   /// `DWMWA_CLOAKED` attribute is used to check whether these apps are
   /// visible.
   pub(crate) fn is_cloaked(&self) -> crate::Result<bool> {
+    Ok(self.cloak_flags()? != 0)
+  }
+
+  /// Gets the window's `DWMWA_CLOAKED` flags (e.g. `DWM_CLOAKED_APP` or
+  /// `DWM_CLOAKED_SHELL`); 0 if the window isn't cloaked.
+  fn cloak_flags(&self) -> crate::Result<u32> {
     let mut cloaked = 0u32;
 
     unsafe {
@@ -737,7 +779,7 @@ impl NativeWindow {
       )
     }?;
 
-    Ok(cloaked != 0)
+    Ok(cloaked)
   }
 }
 
