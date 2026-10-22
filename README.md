@@ -152,6 +152,13 @@ is what changed:
 The old keys are still accepted: they are logged as deprecated and the new keys win, but
 they should be moved over, since they will be removed eventually.
 
+Workspaces default to the `scrolling` layout. To keep GlazeWM's tiling behavior, set
+`layout.default: 'tiling'`.
+
+Unknown keys inside the `layout` block (and the per-workspace `scroll`, `bsp`, and
+`layout_overrides` blocks) are rejected rather than ignored, so a typo fails the config
+load instead of being silently dropped.
+
 ## Default keybindings
 
 On the first launch of GlideWM, a default configuration can optionally be generated.

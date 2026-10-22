@@ -1125,7 +1125,8 @@ fn set_cloaked(_handle: WindowId, _cloaked: bool) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
   use wm_common::{
-    BspConfig, ScrollConfig, WorkspaceConfig, WorkspaceLayout,
+    BspConfig, LayoutSwitchBehavior, ScrollConfig, WorkspaceConfig,
+    WorkspaceLayout,
   };
 
   use super::*;
@@ -1169,7 +1170,7 @@ mod tests {
       layout: WorkspaceLayout::Tiling,
       scroll: ScrollConfig::default(),
       bsp: BspConfig::default(),
-      layout_switch: None,
+      layout_switch: LayoutSwitchBehavior::default(),
     }
   }
 

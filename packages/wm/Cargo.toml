@@ -44,5 +44,6 @@ wm-macros = { workspace = true }
 wm-platform = { path = "../wm-platform" }
 
 [dev-dependencies]
+indoc = "2"
 bon = "3"
 wm-platform = { path = "../wm-platform", features = ["test_utils"] }

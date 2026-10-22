@@ -6,8 +6,9 @@
 use bon::bon;
 use tokio::sync::mpsc;
 use wm_common::{
-  BspConfig, FloatingStateConfig, GapsConfig, ScrollConfig,
-  TilingDirection, WindowState, WorkspaceConfig, WorkspaceLayout,
+  BspConfig, FloatingStateConfig, GapsConfig, LayoutSwitchBehavior,
+  ScrollConfig, TilingDirection, WindowState, WorkspaceConfig,
+  WorkspaceLayout,
 };
 use wm_platform::{Dispatcher, Display, NativeWindow, Rect, RectDelta};
 
@@ -54,26 +55,10 @@ pub fn mock_border_delta() -> RectDelta {
 }
 
 /// Creates a `UserConfig` from the given YAML config.
-///
-/// The common leading whitespace of the YAML is stripped, so that it can
-/// be written as an indented block.
 #[must_use]
 pub fn mock_user_config(yaml: &str) -> UserConfig {
-  let indent = yaml
-    .lines()
-    .filter(|line| !line.trim().is_empty())
-    .map(|line| line.len() - line.trim_start().len())
-    .min()
-    .unwrap_or(0);
-
-  let yaml = yaml
-    .lines()
-    .map(|line| &line[indent.min(line.len())..])
-    .collect::<Vec<_>>()
-    .join("\n");
-
   let mut config = UserConfig::mock();
-  config.value = serde_yaml::from_str(&yaml).unwrap();
+  config.value = serde_yaml::from_str(yaml).unwrap();
 
   config
 }
@@ -324,7 +309,7 @@ impl Workspace {
       layout,
       scroll,
       bsp,
-      layout_switch: None,
+      layout_switch: LayoutSwitchBehavior::default(),
     };
 
     let workspace = Self::new(config, gaps_config, tiling_direction);

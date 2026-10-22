@@ -122,7 +122,10 @@ fn workspace_config(
 
 #[cfg(test)]
 mod tests {
-  use wm_common::{BspConfig, ScrollConfig, WorkspaceLayout};
+  use indoc::indoc;
+  use wm_common::{
+    BspConfig, LayoutSwitchBehavior, ScrollConfig, WorkspaceLayout,
+  };
 
   use super::*;
   use crate::test_utils::mock_user_config;
@@ -140,7 +143,7 @@ mod tests {
       layout: WorkspaceLayout::Scrolling,
       scroll: ScrollConfig::default(),
       bsp: BspConfig::default(),
-      layout_switch: None,
+      layout_switch: LayoutSwitchBehavior::default(),
     }];
 
     config
@@ -179,14 +182,12 @@ mod tests {
 
     // The workspace doesn't set a layout, so it inherits the global
     // default.
-    let config = mock_user_config(
-      r"
+    let config = mock_user_config(indoc! {r"
       layout:
         default: 'scrolling'
       workspaces:
         - name: '1'
-      ",
-    );
+      "});
 
     let found_config =
       workspace_config(Some("1"), None, &mut state, &config).unwrap();

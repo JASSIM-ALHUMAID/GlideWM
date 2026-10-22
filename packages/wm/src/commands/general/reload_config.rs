@@ -145,7 +145,7 @@ fn update_workspace_configs(
             workspace,
             &prev_config,
             workspace_config,
-            layouts::layout_switch_behavior(workspace_config, config),
+            workspace_config.layout_switch,
             state,
           )?;
 
@@ -221,9 +221,10 @@ fn update_window_effects(
 
 #[cfg(test)]
 mod tests {
+  use indoc::indoc;
   use wm_common::{
-    BspConfig, ScrollConfig, TilingDirection, WorkspaceConfig,
-    WorkspaceLayout,
+    BspConfig, LayoutSwitchBehavior, ScrollConfig, TilingDirection,
+    WorkspaceConfig, WorkspaceLayout,
   };
 
   use super::*;
@@ -254,7 +255,7 @@ mod tests {
         ..ScrollConfig::default()
       },
       bsp: BspConfig::default(),
-      layout_switch: None,
+      layout_switch: LayoutSwitchBehavior::default(),
     }];
 
     config
@@ -452,14 +453,12 @@ mod tests {
 
     // The workspace doesn't set a layout, so it inherits the global
     // default.
-    let config = mock_user_config(
-      r"
+    let config = mock_user_config(indoc! {r"
       layout:
         default: 'scrolling'
       workspaces:
         - name: '1'
-      ",
-    );
+      "});
 
     update_workspace_configs(&mut state, &config).unwrap();
 
@@ -472,15 +471,13 @@ mod tests {
 
     // The workspace sets its own layout, so the global default doesn't
     // apply to it.
-    let config = mock_user_config(
-      r"
+    let config = mock_user_config(indoc! {r"
       layout:
         default: 'scrolling'
       workspaces:
         - name: '1'
           layout: 'tiling'
-      ",
-    );
+      "});
 
     update_workspace_configs(&mut state, &config).unwrap();
 
@@ -491,16 +488,14 @@ mod tests {
   fn reload_global_scrolling_options_apply() {
     let (workspace, mut state) = mock_state_with_workspace();
 
-    let config = mock_user_config(
-      r"
+    let config = mock_user_config(indoc! {r"
       layout:
         default: 'scrolling'
         scrolling:
           axis: 'vertical'
       workspaces:
         - name: '1'
-      ",
-    );
+      "});
 
     update_workspace_configs(&mut state, &config).unwrap();
 
@@ -513,8 +508,7 @@ mod tests {
   fn reload_workspace_override_beats_global_scrolling_options() {
     let (workspace, mut state) = mock_state_with_workspace();
 
-    let config = mock_user_config(
-      r"
+    let config = mock_user_config(indoc! {r"
       layout:
         default: 'scrolling'
         scrolling:
@@ -524,8 +518,7 @@ mod tests {
           layout_overrides:
             scrolling:
               axis: 'horizontal'
-      ",
-    );
+      "});
 
     update_workspace_configs(&mut state, &config).unwrap();
 

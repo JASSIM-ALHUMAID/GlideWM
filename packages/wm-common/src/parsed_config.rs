@@ -125,12 +125,10 @@ impl RawParsedConfig {
           layout: workspace.layout.unwrap_or(layout.default.clone()),
           scroll,
           bsp,
-          layout_switch: Some(
-            workspace
-              .layout_switch
-              .or(switch_behavior)
-              .unwrap_or_default(),
-          ),
+          layout_switch: workspace
+            .layout_switch
+            .or(switch_behavior)
+            .unwrap_or_default(),
         }
       })
       .collect();
@@ -790,40 +788,38 @@ pub enum WindowRuleEvent {
   TitleChange,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+/// Resolved workspace config.
+///
+/// Built from a [`RawWorkspaceConfig`] by [`RawParsedConfig::resolve`],
+/// with the global layout config already applied. Not deserialized
+/// directly, so that the global layout config can't be bypassed.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all(serialize = "camelCase"))]
 pub struct WorkspaceConfig {
   pub name: String,
 
-  #[serde(default)]
   pub display_name: Option<String>,
 
-  #[serde(default)]
   pub bind_to_monitor: Option<u32>,
 
-  #[serde(default = "default_bool::<false>")]
   pub keep_alive: bool,
 
-  /// Layout that the workspace uses: `'tiling'` (default),
-  /// `'scrolling'`, or `'bsp'`.
-  ///
-  /// When unset in the config file, `layout.default` is used.
-  #[serde(default)]
+  /// Layout that the workspace uses: `'tiling'`, `'scrolling'`, or
+  /// `'bsp'`. Inherited from `layout.default` when unset in the config
+  /// file.
   pub layout: WorkspaceLayout,
 
   /// Options for the scrolling layout. Only read when `layout` is
   /// `'scrolling'`.
-  #[serde(default)]
   pub scroll: ScrollConfig,
 
   /// Options for the BSP layout. Only read when `layout` is `'bsp'`.
-  #[serde(default)]
   pub bsp: BspConfig,
 
   /// What happens to the existing windows of the workspace when its
-  /// layout is switched. Defaults to `layout.switch_behavior`.
-  #[serde(default)]
-  pub layout_switch: Option<LayoutSwitchBehavior>,
+  /// layout is switched. Inherited from `layout.switch_behavior` (or the
+  /// deprecated `general.layout_switch`) when unset in the config file.
+  pub layout_switch: LayoutSwitchBehavior,
 }
 
 /// Global layout config, shared by all workspaces.
@@ -1414,27 +1410,13 @@ where
 
 #[cfg(test)]
 mod tests {
+  use indoc::indoc;
+
   use super::*;
 
   /// Parses a config from the given YAML string.
-  ///
-  /// The common leading whitespace of the YAML is stripped, so that it
-  /// can be written as an indented block.
   fn parse_config(yaml: &str) -> Result<ParsedConfig, serde_yaml::Error> {
-    let indent = yaml
-      .lines()
-      .filter(|line| !line.trim().is_empty())
-      .map(|line| line.len() - line.trim_start().len())
-      .min()
-      .unwrap_or(0);
-
-    let yaml = yaml
-      .lines()
-      .map(|line| &line[indent.min(line.len())..])
-      .collect::<Vec<_>>()
-      .join("\n");
-
-    serde_yaml::from_str(&yaml)
+    serde_yaml::from_str(yaml)
   }
 
   /// The `+` and `-` keys of the preset size cycle are bound as
@@ -1443,15 +1425,13 @@ mod tests {
   /// resolved as a literal.
   #[test]
   fn parses_preset_size_cycle_bindings() {
-    let config = parse_config(
-      r"
+    let config = parse_config(indoc! {r"
       keybindings:
         - commands: ['cycle-preset-size']
           bindings: ['shift+oem_plus']
         - commands: ['cycle-preset-size --reverse']
           bindings: ['oem_minus']
-      ",
-    )
+      "})
     .unwrap();
 
     let bindings = &config.keybindings[0].bindings[0];
@@ -1572,12 +1552,10 @@ mod tests {
 
   #[test]
   fn defaults_without_layout_block() {
-    let config = parse_config(
-      r"
+    let config = parse_config(indoc! {r"
       workspaces:
         - name: '1'
-      ",
-    )
+      "})
     .unwrap();
 
     assert_eq!(config.layout, LayoutsConfig::default());
@@ -1587,19 +1565,17 @@ mod tests {
     assert_eq!(workspace.layout, WorkspaceLayout::Scrolling);
     assert_eq!(workspace.scroll, ScrollConfig::default());
     assert_eq!(workspace.bsp, BspConfig::default());
-    assert_eq!(workspace.layout_switch, Some(LayoutSwitchBehavior::Keep));
+    assert_eq!(workspace.layout_switch, LayoutSwitchBehavior::Keep);
   }
 
   #[test]
   fn workspace_inherits_default_layout() {
-    let config = parse_config(
-      r"
+    let config = parse_config(indoc! {r"
       layout:
         default: 'scrolling'
       workspaces:
         - name: '1'
-      ",
-    )
+      "})
     .unwrap();
 
     assert_eq!(config.workspaces[0].layout, WorkspaceLayout::Scrolling);
@@ -1607,15 +1583,13 @@ mod tests {
 
   #[test]
   fn explicit_workspace_layout_wins() {
-    let config = parse_config(
-      r"
+    let config = parse_config(indoc! {r"
       layout:
         default: 'scrolling'
       workspaces:
         - name: '1'
           layout: 'tiling'
-      ",
-    )
+      "})
     .unwrap();
 
     assert_eq!(config.workspaces[0].layout, WorkspaceLayout::Tiling);
@@ -1623,8 +1597,7 @@ mod tests {
 
   #[test]
   fn workspace_overrides_are_partial() {
-    let config = parse_config(
-      r"
+    let config = parse_config(indoc! {r"
       layout:
         scrolling:
           window_width: 0.5
@@ -1634,8 +1607,7 @@ mod tests {
           layout_overrides:
             scrolling:
               window_width: 0.8
-      ",
-    )
+      "})
     .unwrap();
 
     let scroll = &config.workspaces[0].scroll;
@@ -1649,8 +1621,7 @@ mod tests {
 
   #[test]
   fn legacy_scroll_block_merges_with_global() {
-    let config = parse_config(
-      r"
+    let config = parse_config(indoc! {r"
       layout:
         scrolling:
           window_width: 0.5
@@ -1659,8 +1630,7 @@ mod tests {
         - name: '1'
           scroll:
             window_width: 0.8
-      ",
-    )
+      "})
     .unwrap();
 
     let scroll = &config.workspaces[0].scroll;
@@ -1671,8 +1641,7 @@ mod tests {
 
   #[test]
   fn new_overrides_beat_legacy_overrides() {
-    let config = parse_config(
-      r"
+    let config = parse_config(indoc! {r"
       workspaces:
         - name: '1'
           scroll:
@@ -1680,8 +1649,7 @@ mod tests {
           layout_overrides:
             scrolling:
               window_width: 0.8
-      ",
-    )
+      "})
     .unwrap();
 
     let scroll = &config.workspaces[0].scroll;
@@ -1691,8 +1659,7 @@ mod tests {
 
   #[test]
   fn bsp_overrides_are_partial() {
-    let config = parse_config(
-      r"
+    let config = parse_config(indoc! {r"
       layout:
         bsp:
           automatic_scheme: 'alternate'
@@ -1701,8 +1668,7 @@ mod tests {
           layout_overrides:
             bsp:
               automatic_scheme: 'longest_side'
-      ",
-    )
+      "})
     .unwrap();
 
     assert_eq!(
@@ -1713,8 +1679,7 @@ mod tests {
 
   #[test]
   fn legacy_and_new_config_resolve_identically() {
-    let legacy = parse_config(
-      r"
+    let legacy = parse_config(indoc! {r"
       general:
         layout_switch: 'keep'
       workspaces:
@@ -1726,12 +1691,10 @@ mod tests {
           bsp:
             automatic_scheme: 'alternate'
           layout_switch: 'reflow'
-      ",
-    )
+      "})
     .unwrap();
 
-    let new = parse_config(
-      r"
+    let new = parse_config(indoc! {r"
       layout:
         switch_behavior: 'keep'
         scrolling:
@@ -1743,8 +1706,7 @@ mod tests {
         - name: '1'
           layout: 'scrolling'
           layout_switch: 'reflow'
-      ",
-    )
+      "})
     .unwrap();
 
     assert_eq!(legacy.workspaces, new.workspaces);
@@ -1752,162 +1714,138 @@ mod tests {
 
   #[test]
   fn preset_sizes_are_normalized_in_overrides() {
-    let config = parse_config(
-      r"
+    let config = parse_config(indoc! {r"
       workspaces:
         - name: '1'
           layout_overrides:
             scrolling:
               preset_widths: [1.0, 0.25, 0.25]
-      ",
-    )
+      "})
     .unwrap();
 
     assert_eq!(config.workspaces[0].scroll.preset_widths, vec![0.25, 1.0]);
 
     // An empty list is invalid.
-    assert!(parse_config(
-      r"
+    assert!(parse_config(indoc! {r"
       workspaces:
         - name: '1'
           layout_overrides:
             scrolling:
               preset_widths: []
-      ",
-    )
+      "})
     .is_err());
   }
 
   #[test]
   fn switch_behavior_precedence() {
     // The workspace config takes precedence over the global config.
-    let config = parse_config(
-      r"
+    let config = parse_config(indoc! {r"
       layout:
         switch_behavior: 'keep'
       workspaces:
         - name: '1'
           layout_switch: 'reflow'
-      ",
-    )
+      "})
     .unwrap();
 
     assert_eq!(
       config.workspaces[0].layout_switch,
-      Some(LayoutSwitchBehavior::Reflow)
+      LayoutSwitchBehavior::Reflow
     );
 
     // The global config takes precedence over the deprecated config.
-    let config = parse_config(
-      r"
+    let config = parse_config(indoc! {r"
       general:
         layout_switch: 'reflow'
       layout:
         switch_behavior: 'keep'
       workspaces:
         - name: '1'
-      ",
-    )
+      "})
     .unwrap();
 
     assert_eq!(
       config.workspaces[0].layout_switch,
-      Some(LayoutSwitchBehavior::Keep)
+      LayoutSwitchBehavior::Keep
     );
 
     // The deprecated config is used when the global config is unset.
-    let config = parse_config(
-      r"
+    let config = parse_config(indoc! {r"
       general:
         layout_switch: 'keep'
       workspaces:
         - name: '1'
-      ",
-    )
+      "})
     .unwrap();
 
     assert_eq!(
       config.workspaces[0].layout_switch,
-      Some(LayoutSwitchBehavior::Keep)
+      LayoutSwitchBehavior::Keep
     );
 
     // The default is used when neither config is set.
-    let config = parse_config(
-      r"
+    let config = parse_config(indoc! {r"
       workspaces:
         - name: '1'
-      ",
-    )
+      "})
     .unwrap();
 
     assert_eq!(
       config.workspaces[0].layout_switch,
-      Some(LayoutSwitchBehavior::Keep)
+      LayoutSwitchBehavior::Keep
     );
   }
 
   #[test]
   fn tiling_block_is_accepted() {
-    let config = parse_config(
-      r"
+    let config = parse_config(indoc! {r"
       layout:
         tiling: {}
-      ",
-    )
+      "})
     .unwrap();
 
     assert_eq!(config.layout.tiling, TilingConfig::default());
 
     // An empty value is accepted as well.
-    let config = parse_config(
-      r"
+    let config = parse_config(indoc! {r"
       layout:
         tiling:
-      ",
-    )
+      "})
     .unwrap();
 
     assert_eq!(config.layout.tiling, TilingConfig::default());
 
     // Unknown keys are rejected.
-    assert!(parse_config(
-      r"
+    assert!(parse_config(indoc! {r"
       layout:
         tiling:
           unknown: 1
-      ",
-    )
+      "})
     .is_err());
 
-    assert!(parse_config(
-      r"
+    assert!(parse_config(indoc! {r"
         layout:
           unknown: 1
-        ",
-    )
+        "})
     .is_err());
   }
 
   #[test]
   fn rejects_unknown_layout_options() {
-    assert!(parse_config(
-      r"
+    assert!(parse_config(indoc! {r"
       layout:
         scrolling:
           window_widht: 0.5
-      ",
-    )
+      "})
     .is_err());
 
-    assert!(parse_config(
-      r"
+    assert!(parse_config(indoc! {r"
       workspaces:
         - name: '1'
           layout_overrides:
             scrolling:
               window_widht: 0.5
-      ",
-    )
+      "})
     .is_err());
   }
 }

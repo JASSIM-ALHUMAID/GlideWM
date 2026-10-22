@@ -46,7 +46,6 @@ use crate::{
     handle_window_title_changed,
   },
   ipc_server::IpcServer,
-  layouts,
   models::{Container, WorkspaceTarget},
   traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
@@ -638,8 +637,7 @@ impl WindowManager {
           subject_container.workspace().context("No workspace.")?
         };
 
-        let behavior =
-          layouts::layout_switch_behavior(&workspace.config(), config);
+        let behavior = workspace.config().layout_switch;
 
         set_workspace_layout(&workspace, layout, behavior, state)
       }
@@ -654,8 +652,7 @@ impl WindowManager {
 
         let new_layout = workspace.config().layout.next();
 
-        let behavior =
-          layouts::layout_switch_behavior(&workspace.config(), config);
+        let behavior = workspace.config().layout_switch;
 
         set_workspace_layout(&workspace, &new_layout, behavior, state)
       }
