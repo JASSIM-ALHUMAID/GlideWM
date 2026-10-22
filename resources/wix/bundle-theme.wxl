@@ -14,9 +14,6 @@
   <String Id="InstallVersion" Value="Version [WixBundleVersion]" />
   <String Id="CustomInstallGlideWM" Value="Install GlideWM" />
   <String Id="CustomInstallGlideWMHint" Value="&lt;a href=&quot;https://github.com/JASSIM-ALHUMAID/glazewm&quot;&gt;GlideWM&lt;/a&gt; is a tiling window manager for Windows." />
-  <String Id="CustomInstallZebar" Value="Install Zebar (recommended)" />
-  <String Id="CustomInstallZebarHint1" Value="&lt;a href=&quot;https://github.com/glzr-io/zebar&quot;&gt;Zebar&lt;/a&gt; is a lightweight tool for custom widgets." />
-  <String Id="CustomInstallZebarHint2" Value="Adds a starter config for showing GlideWM workspaces." />
   <String Id="ConfirmCancelMessage" Value="Are you sure you want to cancel?" />
   <String Id="ExecuteUpgradeRelatedBundleMessage" Value="Previous version" />
   <String Id="HelpHeader" Value="Setup Help" />

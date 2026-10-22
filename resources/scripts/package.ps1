@@ -49,27 +49,6 @@ function SignFiles() {
   ExitOnError
 }
 
-function DownloadZebarInstallers() {
-  Write-Output "Downloading latest Zebar MSI's"
-
-  $latestRelease = 'https://api.github.com/repos/glzr-io/zebar/releases/latest'
-  $latestInstallers = Invoke-RestMethod $latestRelease | % assets | ? name -like "*.msi"
-
-  $latestInstallers | ForEach-Object {
-    $outFile = Join-Path "out" $_.name
-
-    # Rename the MSI files (e.g. `zebar-1.5.0-opt1-x64.msi` -> `zebar-x64.msi`).
-    if ($_.name -like "*-x64.msi") {
-      $outFile = "out/zebar-x64.msi"
-    }
-    elseif ($_.name -like "*-arm64.msi") {
-      $outFile = "out/zebar-arm64.msi"
-    }
-
-    Invoke-WebRequest $_.browser_download_url -OutFile $outFile
-  }
-}
-
 function BuildExes() {
   # Rust targets to build for (x64 and arm64).
   $rustTargets = @("x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc")
@@ -139,7 +118,6 @@ function Package() {
   Write-Output "Creating output directory"
   New-Item -ItemType Directory -Force -Path "out"
 
-  DownloadZebarInstallers
   BuildExes
   BuildInstallers
 }

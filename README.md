@@ -122,7 +122,14 @@ changed. Pass `-SkipBuild` to install the binaries that are already in `target\r
 The `ui_access` feature is what lets GlideWM manage elevated windows (such as Task
 Manager) without running as administrator itself. It needs a *trusted* signature, which is
 what the self-signed certificate is for. That's why the script installs the binaries into
-Program Files and trusts the certificate machine-wide.
+Program Files and trusts the certificate machine-wide. The certificate's private key is
+kept in the machine store, where only administrators can use it, so nothing running as
+your user can sign code with it. Signing happens in the elevated step.
+
+The script is currently the only supported way to install GlideWM. The WiX installer
+sources in `resources/wix` are kept, but no installer is built or published, since an
+installer without a trusted (paid) code-signing certificate can't grant UIAccess. Zebar is
+no longer bundled; install it separately if you want it.
 
 ### The CLI
 
