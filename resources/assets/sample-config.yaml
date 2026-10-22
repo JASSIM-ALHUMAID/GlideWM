@@ -354,6 +354,16 @@ binding_modes:
         bindings: ['k', 'up']
       - commands: ['resize --height -2%']
         bindings: ['j', 'down']
+      # Cycle the focused window through the preset sizes of the scrolling
+      # layout (`layout.scrolling.preset_widths` / `preset_heights`).
+      # Only scrolling workspaces have preset sizes, so this does nothing
+      # in a tiling or BSP workspace.
+      # The `+` key needs shift on most keyboard layouts, so it's spelled
+      # out as `shift` + the `=` key.
+      - commands: ['cycle-preset-size']
+        bindings: ['shift+oem_plus']
+      - commands: ['cycle-preset-size --reverse']
+        bindings: ['oem_minus']
       # Press escape/enter/alt+r to return to default keybindings.
       - commands: ['wm-disable-binding-mode --name resize']
         bindings: ['escape', 'enter', 'alt+r']

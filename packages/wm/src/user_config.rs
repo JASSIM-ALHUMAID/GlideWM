@@ -395,7 +395,9 @@ impl UserConfig {
 
 #[cfg(test)]
 mod tests {
-  use wm_common::{LayoutSwitchBehavior, ScrollAlign, WorkspaceLayout};
+  use wm_common::{
+    InvokeCommand, LayoutSwitchBehavior, ScrollAlign, WorkspaceLayout,
+  };
 
   use super::*;
 
@@ -421,5 +423,38 @@ mod tests {
 
     // The deprecated config options aren't used by the sample config.
     assert_eq!(config.general.layout_switch, None);
+  }
+
+  /// The default config ships the preset size cycle in the resize binding
+  /// mode, so that the preset sizes are reachable with `alt+r` followed by
+  /// `+` / `-`.
+  #[test]
+  fn sample_config_binds_preset_size_cycle() {
+    let config: ParsedConfig =
+      serde_yaml::from_str(SAMPLE_CONFIG).unwrap();
+
+    let resize_mode = config
+      .binding_modes
+      .iter()
+      .find(|mode| mode.name == "resize")
+      .expect("The sample config has a 'resize' binding mode.");
+
+    // Whether each preset size binding cycles towards the next (`false`)
+    // or the previous (`true`) preset.
+    let directions: Vec<bool> = resize_mode
+      .keybindings
+      .iter()
+      .filter_map(|keybinding| {
+        keybinding
+          .commands
+          .iter()
+          .find_map(|command| match command {
+            InvokeCommand::CyclePresetSize { reverse } => Some(*reverse),
+            _ => None,
+          })
+      })
+      .collect();
+
+    assert_eq!(directions, [false, true]);
   }
 }

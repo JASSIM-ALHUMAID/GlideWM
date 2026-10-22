@@ -1437,6 +1437,38 @@ mod tests {
     serde_yaml::from_str(&yaml)
   }
 
+  /// The `+` and `-` keys of the preset size cycle are bound as
+  /// `shift+oem_plus` and `oem_minus`. A literal `+` can't be used: the
+  /// binding string is split on `+`, and a key that needs shift can't be
+  /// resolved as a literal.
+  #[test]
+  fn parses_preset_size_cycle_bindings() {
+    let config = parse_config(
+      r"
+      keybindings:
+        - commands: ['cycle-preset-size']
+          bindings: ['shift+oem_plus']
+        - commands: ['cycle-preset-size --reverse']
+          bindings: ['oem_minus']
+      ",
+    )
+    .unwrap();
+
+    let bindings = &config.keybindings[0].bindings[0];
+    assert_eq!(
+      bindings.keys(),
+      &[Key::Shift, Key::OemPlus],
+      "The next preset is bound to shift + the `=` key."
+    );
+
+    let bindings = &config.keybindings[1].bindings[0];
+    assert_eq!(
+      bindings.keys(),
+      &[Key::OemMinus],
+      "The previous preset is bound to the `-` key."
+    );
+  }
+
   /// The cycle order in [`WorkspaceLayout::ALL`] must match what
   /// repeatedly calling [`WorkspaceLayout::next`] produces.
   #[test]
