@@ -62,33 +62,46 @@ $Binaries = [ordered]@{
 function Build-Binaries() {
   Write-Host "Building release binaries. This can take a while on the first run."
 
-  # Prefer rustup, so that the nightly toolchain pinned by
-  # `rust-toolchain.toml` is used even when a standalone `cargo` on the
-  # PATH shadows it.
-  if (Get-Command "rustup" -ErrorAction SilentlyContinue) {
-    $cargoExe = "rustup"
-    $cargoArgs = @("run", "nightly", "cargo")
-  } else {
-    $cargoExe = "cargo"
-    $cargoArgs = @()
-  }
-
   $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 
   Push-Location $repoRoot
 
+  # Restored afterwards, since a script's environment changes outlive it in
+  # the calling shell.
+  $previousRustc = $env:RUSTC
+
   try {
-    & $cargoExe @cargoArgs build --release -p wm --features ui_access
+    $cargoExe = "cargo"
+
+    # Prefer rustup, so that the nightly toolchain pinned by
+    # `rust-toolchain.toml` is used even when a standalone (e.g. stable)
+    # install comes first on the PATH.
+    if (Get-Command "rustup" -ErrorAction SilentlyContinue) {
+      # `rustup which` resolves the toolchain of the current directory.
+      $cargoExe = (& rustup which cargo | Out-String).Trim()
+      $rustcExe = (& rustup which rustc | Out-String).Trim()
+
+      if ($LASTEXITCODE -ne 0 -or !$cargoExe -or !$rustcExe) {
+        throw "Failed to resolve the toolchain pinned by 'rust-toolchain.toml'. Install it with 'rustup toolchain install nightly'."
+      }
+
+      # Cargo looks `rustc` up on the PATH, where a standalone install can
+      # shadow the toolchain's compiler.
+      $env:RUSTC = $rustcExe
+    }
+
+    & $cargoExe build --release -p wm --features ui_access
     if ($LASTEXITCODE -ne 0) {
       throw "Failed to build the WM binary. The build needs a nightly Rust toolchain (see https://rustup.rs)."
     }
 
-    & $cargoExe @cargoArgs build --release -p wm-watcher -p wm-cli
+    & $cargoExe build --release -p wm-watcher -p wm-cli
     if ($LASTEXITCODE -ne 0) {
       throw "Failed to build the watcher and CLI binaries."
     }
   }
   finally {
+    $env:RUSTC = $previousRustc
     Pop-Location
   }
 }
