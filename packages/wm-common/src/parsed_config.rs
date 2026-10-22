@@ -903,11 +903,19 @@ pub enum ScrollAlign {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScrollInsertPosition {
+  /// Insert at the start of the strip (the top for a vertical scroll
+  /// axis, the left for a horizontal one).
+  Start,
+
+  /// Insert directly before the focused strip item.
+  BeforeFocused,
+
   /// Insert directly after the focused strip item.
   #[default]
   AfterFocused,
 
-  /// Append to the end of the strip.
+  /// Append to the end of the strip (the bottom for a vertical scroll
+  /// axis, the right for a horizontal one).
   End,
 }
 
@@ -1089,6 +1097,22 @@ mod tests {
   fn rejects_invalid_preset_sizes() {
     assert!(normalize_preset_sizes(vec![]).is_err());
     assert!(normalize_preset_sizes(vec![0.5, f32::NAN]).is_err());
+  }
+
+  #[test]
+  fn deserializes_scroll_insert_positions() {
+    for (value, expected) in [
+      ("start", ScrollInsertPosition::Start),
+      ("before_focused", ScrollInsertPosition::BeforeFocused),
+      ("after_focused", ScrollInsertPosition::AfterFocused),
+      ("end", ScrollInsertPosition::End),
+    ] {
+      let config: ScrollConfig =
+        serde_yaml::from_str(&format!("insert_position: {value}"))
+          .unwrap();
+
+      assert_eq!(config.insert_position, expected);
+    }
   }
 
   #[test]

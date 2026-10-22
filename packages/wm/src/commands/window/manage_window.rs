@@ -410,6 +410,33 @@ mod tests {
   }
 
   #[test]
+  fn inserts_before_focused_strip_item() {
+    let (state, workspace, _windows) =
+      mock_scrolling_state(ScrollInsertPosition::BeforeFocused, 1);
+
+    let (parent, index) =
+      layouts::insertion_target(&WindowState::Tiling, &state).unwrap();
+
+    // The window is inserted directly before the strip item containing
+    // the focused window.
+    assert_eq!(parent.id(), workspace.id());
+    assert_eq!(index, 1);
+  }
+
+  #[test]
+  fn inserts_at_start_of_strip() {
+    let (state, workspace, _windows) =
+      mock_scrolling_state(ScrollInsertPosition::Start, 1);
+
+    let (parent, index) =
+      layouts::insertion_target(&WindowState::Tiling, &state).unwrap();
+
+    // The window becomes the first strip item, regardless of focus.
+    assert_eq!(parent.id(), workspace.id());
+    assert_eq!(index, 0);
+  }
+
+  #[test]
   fn appends_to_end_of_strip() {
     let (state, workspace, _windows) =
       mock_scrolling_state(ScrollInsertPosition::End, 1);

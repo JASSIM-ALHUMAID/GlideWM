@@ -539,30 +539,37 @@ pub(super) fn insertion_target(
     );
   }
 
+  let focused_strip_index =
+    focused_strip_item_index(focused_container, focused_workspace);
+
   let insert_index =
     match focused_workspace.config().scroll.insert_position {
-      ScrollInsertPosition::AfterFocused => {
-        focused_strip_item_index(focused_container, focused_workspace)
+      ScrollInsertPosition::Start => 0,
+      ScrollInsertPosition::BeforeFocused => {
+        focused_strip_index.unwrap_or(0)
       }
+      ScrollInsertPosition::AfterFocused => focused_strip_index
+        .map_or(focused_workspace.child_count(), |index| index + 1),
       ScrollInsertPosition::End => focused_workspace.child_count(),
     };
 
   (focused_workspace.clone().into(), insert_index)
 }
 
-/// Gets the index directly after the strip item that contains the
-/// focused container.
+/// Gets the index of the strip item that contains the focused container.
 ///
-/// Falls back to the end of the workspace if it has no tiling windows.
+/// Falls back to the first tiling window when the focused container is
+/// not tiling (e.g. a floating window). Returns `None` if the workspace
+/// has no tiling windows.
 fn focused_strip_item_index(
   focused_container: &Container,
   workspace: &Workspace,
-) -> usize {
+) -> Option<usize> {
   let tiling_container = match focused_container {
-    // Insert after the focused tiling window.
+    // Use the focused tiling window.
     Container::TilingWindow(_) => Some(focused_container.clone()),
-    // If a non-tiling window is focused, insert after the first tiling
-    // window found.
+    // If a non-tiling window is focused, use the first tiling window
+    // found.
     _ => workspace
       .descendant_focus_order()
       .find(Container::is_tiling_window),
@@ -570,7 +577,6 @@ fn focused_strip_item_index(
 
   tiling_container
     .and_then(|container| strip_item_index(workspace, &container))
-    .map_or(workspace.child_count(), |index| index + 1)
 }
 
 /// Inserts a window into the target workspace as part of moving it

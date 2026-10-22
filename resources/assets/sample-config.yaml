@@ -229,8 +229,10 @@ workspaces:
     #  # - 'center': Center the focused window in the viewport.
     #  align: 'minimal'
     #  # Where new windows are inserted in the strip:
+    #  # - 'start': Insert at the start of the strip (top/left).
+    #  # - 'before_focused': Insert directly before the focused window.
     #  # - 'after_focused': Insert directly after the focused window.
-    #  # - 'end': Append to the end of the strip.
+    #  # - 'end': Append to the end of the strip (bottom/right).
     #  insert_position: 'after_focused'
     #  # How windows scrolled out of view are kept out of view:
     #  # - 'hide': Hidden with the hide method (not listed in Alt+Tab).
