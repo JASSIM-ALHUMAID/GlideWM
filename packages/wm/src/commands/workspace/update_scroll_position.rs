@@ -5,9 +5,12 @@ use crate::{
 /// Updates scroll offsets of displayed scrolling workspaces.
 ///
 /// If focus changed since the last sync, the focused container is
-/// scrolled into view. Offsets of all displayed scrolling workspaces are
-/// clamped to the valid range to handle strip contents changing (e.g. a
-/// window being closed or moved to another workspace).
+/// scrolled into view. Workspaces queued for a rescroll (strip contents
+/// changed without a focus change, e.g. a window exiting fullscreen) get
+/// their focused descendant scrolled back into view. Offsets of all
+/// displayed scrolling workspaces are clamped to the valid range to
+/// handle strip contents changing (e.g. a window being closed or moved to
+/// another workspace).
 ///
 /// Queues a redraw of any workspace whose scroll offset changed.
 pub fn update_scroll_position(
@@ -27,16 +30,27 @@ pub fn update_scroll_position(
       continue;
     }
 
-    let mut offset_changed = false;
-
     let is_focused_workspace = focused_workspace
       .as_ref()
       .is_some_and(|focused| focused.id() == workspace.id());
 
-    if is_focused_workspace && state.pending_sync.needs_focus_update() {
+    // The focused container is the focused descendant of the focused
+    // workspace, so both cases scroll the same container into view there.
+    let scroll_target =
+      if is_focused_workspace && state.pending_sync.needs_focus_update() {
+        Some(focused_container.clone())
+      } else if state.pending_sync.needs_rescroll(&workspace) {
+        workspace.descendant_focus_order().next()
+      } else {
+        None
+      };
+
+    let mut offset_changed = false;
+
+    if let Some(scroll_target) = scroll_target {
       offset_changed |= layouts::scrolling::ensure_descendant_visible(
         &workspace,
-        focused_container,
+        &scroll_target,
       )?;
     }
 

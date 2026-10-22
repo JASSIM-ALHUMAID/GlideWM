@@ -110,9 +110,18 @@ fn set_tiling(
     );
   }
 
+  // While the window was non-tiling (e.g. fullscreen), the strip of a
+  // scrolling workspace was shorter, which may have clamped the scroll
+  // offset. The rescroll is deferred to the sync, so that it applies to
+  // the final tree (e.g. after a drag-drop moves the window again).
+  let target_workspace = tiling_window
+    .workspace()
+    .context("Window has no workspace.")?;
+
   state
     .pending_sync
     .queue_containers_to_redraw(target_parent.tiling_children())
+    .queue_workspace_to_rescroll(target_workspace)
     .queue_workspace_to_reorder(workspace);
 
   Ok(tiling_window.into())
@@ -197,9 +206,157 @@ fn set_non_tiling(
         .pending_sync
         .queue_container_to_redraw(non_tiling_window.clone())
         .queue_containers_to_redraw(workspace.tiling_children())
+        .queue_workspace_to_rescroll(workspace.clone())
         .queue_workspace_to_reorder(workspace);
 
       Ok(non_tiling_window.into())
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_common::{
+    FullscreenStateConfig, GapsConfig, ScrollConfig, TilingDirection,
+  };
+
+  use super::*;
+  use crate::{
+    commands::{
+      container::{
+        attach_container, move_container_within_tree,
+        set_focused_descendant,
+      },
+      workspace::update_scroll_position,
+    },
+    models::{TilingWindow, Workspace},
+    test_utils::mock_scrolling_workspace,
+  };
+
+  /// Creates a displayed scrolling workspace with three strip items, each
+  /// half of the viewport, and focuses the window at `focused_index`.
+  fn setup(
+    axis: TilingDirection,
+    focused_index: usize,
+  ) -> (WmState, Workspace, Vec<TilingWindow>) {
+    let (workspace, windows) = mock_scrolling_workspace(
+      axis,
+      3,
+      0.5,
+      &GapsConfig::default(),
+      ScrollConfig::default(),
+    );
+
+    let state = WmState::mock();
+    let monitor = workspace.monitor().unwrap();
+    attach_container(
+      &monitor.into(),
+      &state.root_container.clone().into(),
+      None,
+    )
+    .unwrap();
+
+    set_focused_descendant(&windows[focused_index].clone().into(), None);
+
+    (state, workspace, windows)
+  }
+
+  /// Runs the scroll step of a platform sync and clears the pending sync,
+  /// like `platform_sync` does.
+  fn sync(focused_container: &Container, state: &mut WmState) {
+    update_scroll_position(focused_container, state).unwrap();
+    state.pending_sync.clear();
+  }
+
+  /// Fullscreens the window, syncs, and returns it to tiling. The strip
+  /// shrinks while the window is fullscreen, which clamps the offset.
+  fn fullscreen_and_exit(
+    window: &TilingWindow,
+    focused_container: &Container,
+    state: &mut WmState,
+  ) -> WindowContainer {
+    let config = UserConfig::mock();
+
+    let fullscreen = update_window_state(
+      window.clone().into(),
+      WindowState::Fullscreen(FullscreenStateConfig::default()),
+      state,
+      &config,
+    )
+    .unwrap();
+
+    sync(focused_container, state);
+
+    update_window_state(fullscreen, WindowState::Tiling, state, &config)
+      .unwrap()
+  }
+
+  #[test]
+  fn restores_scroll_position_after_fullscreen_exit() {
+    for axis in [TilingDirection::Horizontal, TilingDirection::Vertical] {
+      let (mut state, workspace, windows) = setup(axis, 2);
+
+      workspace.set_scroll_offset(
+        layouts::scrolling::max_scroll_offset(&workspace).unwrap(),
+      );
+      assert!(workspace.scroll_offset() > 0);
+
+      let focused = windows[2].clone().into();
+      let window = fullscreen_and_exit(&windows[2], &focused, &mut state);
+      assert_eq!(workspace.scroll_offset(), 0);
+
+      sync(&window.clone().into(), &mut state);
+
+      assert!(window.is_tiling_window());
+      assert!(workspace.scroll_offset() > 0);
+      assert_eq!(
+        workspace.scroll_offset(),
+        layouts::scrolling::max_scroll_offset(&workspace).unwrap()
+      );
+    }
+  }
+
+  #[test]
+  fn keeps_focused_window_in_view_when_other_window_exits_fullscreen() {
+    for axis in [TilingDirection::Horizontal, TilingDirection::Vertical] {
+      let (mut state, workspace, windows) = setup(axis, 0);
+      let focused = windows[0].clone().into();
+
+      // An unfocused window exits fullscreen on its own (e.g. a video
+      // ending), which must not scroll the focused window out of view.
+      fullscreen_and_exit(&windows[2], &focused, &mut state);
+      sync(&focused, &mut state);
+
+      assert_eq!(workspace.scroll_offset(), 0);
+    }
+  }
+
+  #[test]
+  fn rescrolls_to_final_position_of_retiled_window() {
+    for axis in [TilingDirection::Horizontal, TilingDirection::Vertical] {
+      let (mut state, workspace, windows) = setup(axis, 2);
+
+      workspace.set_scroll_offset(
+        layouts::scrolling::max_scroll_offset(&workspace).unwrap(),
+      );
+
+      let focused = windows[2].clone().into();
+      let window = fullscreen_and_exit(&windows[2], &focused, &mut state);
+
+      // Moved again before the sync, like a drag-drop onto the start of
+      // the strip.
+      move_container_within_tree(
+        &window.clone().into(),
+        &workspace.clone().into(),
+        0,
+        &state,
+      )
+      .unwrap();
+
+      sync(&window.clone().into(), &mut state);
+
+      assert_eq!(window.index(), 0);
+      assert_eq!(workspace.scroll_offset(), 0);
     }
   }
 }
