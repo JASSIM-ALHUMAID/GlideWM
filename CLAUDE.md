@@ -12,6 +12,13 @@ Crate structure:
 - **wm-platform** (lib): Wrappers over platform-specific APIs; other crates do not call Windows/macOS APIs directly.
 - **wm-watcher** (Windows-only) (bin): Watchdog process ensuring proper cleanup when the main application exits. Install path on Windows: `C:\Program Files\GlideWM\glidewm-watcher.exe`
 
+Branches:
+
+- **`my-glide`**: the fork's main branch and the GitHub default branch. All GlideWM work lands here; base feature branches and PRs on it.
+- **`main`**: mirrors upstream `glzr-io/glazewm` `main` (remote `upstream`). Never commit or push fork work to it; only fast-forward it from `upstream/main`.
+
+Installing: `resources/scripts/install-local.ps1` is the only supported install path (signed UIAccess build). No MSI is built.
+
 </project_overview>
 
 <output_guidelines>
