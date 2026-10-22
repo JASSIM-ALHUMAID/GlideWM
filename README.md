@@ -37,6 +37,10 @@ GlideWM lets you easily organize windows and adjust their layout on the fly by u
 >
 > GlideWM builds on top of GlazeWM, so everything that works upstream works here too. If you
 > hit a bug, check whether it reproduces on upstream GlazeWM first.
+>
+> **GlideWM is Windows only.** The upstream project also supports macOS, but this fork
+> doesn't build, package, or support it. The macOS code is still in the tree, inherited from
+> upstream, and is left untouched so that upstream changes stay easy to merge.
 
 ## What's new
 
@@ -98,30 +102,27 @@ Windhawk "Hyprland Animations" mod) are left to that tool.
 
 ## Installation
 
-GlideWM is built and installed from source. It needs a Rust toolchain (nightly is
-required) and Windows 10 or 11.
+GlideWM is **Windows only**, and is built and installed from source. It needs a Rust
+toolchain. Install it with [rustup](https://rustup.rs), since the build requires nightly.
 
 ```sh
 git clone https://github.com/JASSIM-ALHUMAID/glazewm.git
 cd glazewm
-
-cargo build --release -p wm --features ui_access
-cargo build --release -p wm-watcher -p wm-cli
-
 ./resources/scripts/install-local.ps1
 ```
 
-The install script creates a self-signed code-signing certificate, signs the binaries with
-it, copies them to `C:\Program Files\GlideWM`, registers GlideWM to start on login, and
-launches it. It needs administrator rights, so it will show one UAC prompt.
+That's the whole thing. The script builds the release binaries, creates a self-signed
+code-signing certificate, signs the binaries with it, copies them to
+`C:\Program Files\GlideWM`, registers GlideWM to start on login, and launches it. It needs
+administrator rights, so it will show one UAC prompt.
+
+The build is incremental, so re-running the script after a `git pull` only rebuilds what
+changed. Pass `-SkipBuild` to install the binaries that are already in `target\release`.
 
 The `ui_access` feature is what lets GlideWM manage elevated windows (such as Task
-Manager) without running as administrator itself. For a quick local test without it, build
-plain:
-
-```sh
-cargo build --release -p wm
-```
+Manager) without running as administrator itself. It needs a *trusted* signature, which is
+what the self-signed certificate is for. That's why the script installs the binaries into
+Program Files and trusts the certificate machine-wide.
 
 ### The CLI
 

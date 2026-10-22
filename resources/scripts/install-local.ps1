@@ -1,25 +1,26 @@
-# Installs a locally built GlazeWM with UIAccess, so that it can manage
+# Installs a locally built GlideWM with UIAccess, so that it can manage
 # elevated windows (e.g. Task Manager) without running as administrator.
 #
 # Windows only grants UIAccess to executables that are signed by a trusted
 # certificate and installed in a secure location (e.g. Program Files). This
 # script:
-#   1. Creates a self-signed code signing certificate for the current user
+#   1. Builds the release binaries.
+#   2. Creates a self-signed code signing certificate for the current user
 #      (once; its private key can't be exported).
-#   2. Signs the binaries with it.
-#   3. Trusts the certificate machine-wide and copies the binaries to the
+#   3. Signs the binaries with it.
+#   4. Trusts the certificate machine-wide and copies the binaries to the
 #      install directory (one UAC prompt).
-#   4. Restarts GlazeWM from the install directory and registers it to run
+#   5. Restarts GlideWM from the install directory and registers it to run
 #      on login.
 #
 # Usage:
-#   cargo build --release -p wm --features ui_access
-#   cargo build --release -p wm-watcher -p wm-cli
+#   git clone https://github.com/JASSIM-ALHUMAID/glazewm.git
+#   cd glazewm
 #   ./resources/scripts/install-local.ps1
 #
-# To uninstall, delete the install directory, the `GlazeWM` value under
+# To uninstall, delete the install directory, the `GlideWM` value under
 # `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, and the certificate
-# (subject `CN=GlazeWM Local Code Signing`) from `Cert:\CurrentUser\My`,
+# (subject `CN=GlideWM Local Code Signing`) from `Cert:\CurrentUser\My`,
 # `Cert:\LocalMachine\Root` and `Cert:\LocalMachine\TrustedPublisher`.
 param(
   [string]$SourceDir = (Join-Path $PSScriptRoot "..\..\target\release"),
@@ -27,7 +28,11 @@ param(
   # script runs in a 32-bit shell (where `ProgramFiles` is the x86 one).
   [string]$InstallDir = (Join-Path $(
     if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
-  ) "GlazeWM Fork"),
+  ) "GlideWM"),
+
+  # Skips the build, and installs the binaries that are already in
+  # `$SourceDir`.
+  [switch]$SkipBuild,
 
   # Internal: runs the steps that need administrator rights.
   [switch]$Elevated,
@@ -37,15 +42,51 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$CertSubject = "CN=GlazeWM Local Code Signing"
+$CertSubject = "CN=GlideWM Local Code Signing"
 $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 
 # Source file name -> path relative to the install directory. Matches the
 # layout of the official installer.
 $Binaries = [ordered]@{
-  "glazewm.exe"         = "glazewm.exe"
-  "glazewm-watcher.exe" = "glazewm-watcher.exe"
-  "glazewm-cli.exe"     = "cli\glazewm.exe"
+  "glidewm.exe"         = "glidewm.exe"
+  "glidewm-watcher.exe" = "glidewm-watcher.exe"
+  "glidewm-cli.exe"     = "cli\glidewm.exe"
+}
+
+# Builds the release binaries. The build is incremental, so it's quick when
+# nothing has changed since the last one.
+function Build-Binaries() {
+  Write-Host "Building release binaries. This can take a while on the first run."
+
+  # Prefer rustup, so that the nightly toolchain pinned by
+  # `rust-toolchain.toml` is used even when a standalone `cargo` on the
+  # PATH shadows it.
+  if (Get-Command "rustup" -ErrorAction SilentlyContinue) {
+    $cargoExe = "rustup"
+    $cargoArgs = @("run", "nightly", "cargo")
+  } else {
+    $cargoExe = "cargo"
+    $cargoArgs = @("cargo")
+  }
+
+  $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+
+  Push-Location $repoRoot
+
+  try {
+    & $cargoExe @cargoArgs build --release -p wm --features ui_access
+    if ($LASTEXITCODE -ne 0) {
+      throw "Failed to build the WM binary. The build needs a nightly Rust toolchain (see https://rustup.rs)."
+    }
+
+    & $cargoExe @cargoArgs build --release -p wm-watcher -p wm-cli
+    if ($LASTEXITCODE -ne 0) {
+      throw "Failed to build the watcher and CLI binaries."
+    }
+  }
+  finally {
+    Pop-Location
+  }
 }
 
 # Trusts the certificate machine-wide and copies the staged binaries to the
@@ -98,22 +139,22 @@ function Get-SigningCertificate() {
     -CertStoreLocation Cert:\CurrentUser\My
 }
 
-# Exits GlazeWM if it's running, and waits for it to clean up.
-function Stop-GlazeWM() {
-  if (!(Get-Process glazewm -ErrorAction SilentlyContinue)) {
+# Exits GlideWM if it's running, and waits for it to clean up.
+function Stop-GlideWM() {
+  if (!(Get-Process glidewm -ErrorAction SilentlyContinue)) {
     return
   }
 
-  Write-Host "Exiting running GlazeWM."
-  & (Join-Path $SourceDir "glazewm-cli.exe") command wm-exit | Out-Null
+  Write-Host "Exiting running GlideWM."
+  & (Join-Path $SourceDir "glidewm-cli.exe") command wm-exit | Out-Null
 
   # The watcher restores windows after the main process exits. Polled,
   # since `Wait-Process` can't open 64-bit processes from a 32-bit shell.
   $deadline = (Get-Date).AddSeconds(30)
 
-  while (Get-Process glazewm, glazewm-watcher -ErrorAction SilentlyContinue) {
+  while (Get-Process glidewm, glidewm-watcher -ErrorAction SilentlyContinue) {
     if ((Get-Date) -gt $deadline) {
-      throw "GlazeWM didn't exit. Exit it manually and run this script again."
+      throw "GlideWM didn't exit. Exit it manually and run this script again."
     }
 
     Start-Sleep -Milliseconds 250
@@ -135,23 +176,27 @@ if ($Elevated) {
 
 $SourceDir = (Resolve-Path $SourceDir).Path
 
+if (!$SkipBuild) {
+  Build-Binaries
+}
+
 foreach ($source in $Binaries.Keys) {
   if (!(Test-Path (Join-Path $SourceDir $source))) {
-    throw "Missing '$source' in '$SourceDir'. Build the release binaries first."
+    throw "Missing '$source' in '$SourceDir'. The build didn't produce it."
   }
 }
 
 # UIAccess is only granted if requested in the manifest.
-$manifestMatch = Select-String -Path (Join-Path $SourceDir "glazewm.exe") `
+$manifestMatch = Select-String -Path (Join-Path $SourceDir "glidewm.exe") `
   -Pattern 'uiAccess="true"' -SimpleMatch -Quiet
 
 if (!$manifestMatch) {
-  throw "glazewm.exe wasn't built with the 'ui_access' feature."
+  throw "glidewm.exe wasn't built with the 'ui_access' feature."
 }
 
 $certificate = Get-SigningCertificate
 
-$staging = Join-Path ([IO.Path]::GetTempPath()) "glazewm-install-$PID"
+$staging = Join-Path ([IO.Path]::GetTempPath()) "glidewm-install-$PID"
 $certPath = Join-Path $staging "signing.cer"
 
 try {
@@ -170,7 +215,7 @@ try {
 
   Export-Certificate -Cert $certificate -FilePath $certPath | Out-Null
 
-  Stop-GlazeWM
+  Stop-GlideWM
 
   Write-Host "Installing to '$InstallDir' (requires administrator rights)."
 
@@ -197,17 +242,17 @@ finally {
   Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-$executable = Join-Path $InstallDir "glazewm.exe"
+$executable = Join-Path $InstallDir "glidewm.exe"
 $signature = Get-AuthenticodeSignature $executable
 
 if ($signature.Status -ne "Valid") {
-  throw "Installed glazewm.exe has an invalid signature: $($signature.StatusMessage)"
+  throw "Installed glidewm.exe has an invalid signature: $($signature.StatusMessage)"
 }
 
-Set-ItemProperty $RunKey -Name "GlazeWM" -Value "`"$executable`""
+Set-ItemProperty $RunKey -Name "GlideWM" -Value "`"$executable`""
 
 # Executables with UIAccess have to be launched through the shell (i.e.
-# `ShellExecute`), which `Start-Process` does. GlazeWM is launched without
+# `ShellExecute`), which `Start-Process` does. GlideWM is launched without
 # administrator rights, since this script isn't elevated.
 Start-Process $executable
 

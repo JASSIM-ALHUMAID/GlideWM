@@ -1,6 +1,6 @@
-# Contributing to GlazeWM
+# Contributing to GlideWM
 
-Thanks for your interest in improving GlazeWM 💛
+Thanks for your interest in improving GlideWM 💛
 
 There are fundamentally three ways to contribute:
 
@@ -11,6 +11,10 @@ There are fundamentally three ways to contribute:
 3. **Submitting PRs**: Submit a PR that fixes a bug or implements a feature.
 
 The [#glazewm-dev channel ⚡](https://discord.com/invite/ud6z3qjRvM) is also available for any concerns not covered in this guide, please join us!
+
+> **GlideWM is a personal fork** of [GlazeWM](https://github.com/glzr-io/glazewm), maintained by
+> one person. Issues and pull requests are welcome, but they may take a while to get to. The
+> fork is Windows only.
 
 ## Pull requests & dev workflow
 
@@ -32,7 +36,24 @@ If not already installed, [install Rust](https://rustup.rs/), then run:
 cargo build && cargo run
 ```
 
-After making your changes, push to your fork and [submit a pull request](https://github.com/glzr-io/zebar/pulls) against the `main` branch. Please try to address only a single feature or fix in the PR so that it's easy to review.
+To install the built binaries to `C:\Program Files\GlideWM` and run them, use the install
+script:
+
+```shell
+./resources/scripts/install-local.ps1
+```
+
+After making your changes, push to your fork and [submit a pull request](https://github.com/JASSIM-ALHUMAID/glazewm/pulls) against the `main` branch. Please try to address only a single feature or fix in the PR so that it's easy to review.
+
+### Checks
+
+There is no CI in this fork, so run the checks locally before opening a pull request:
+
+```shell
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --workspace
+```
 
 ### Tips
 

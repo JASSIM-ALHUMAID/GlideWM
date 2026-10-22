@@ -36,6 +36,10 @@ GlideWM 让您可以通过键盘驱动的命令轻松组织窗口并即时调整
 >
 > GlideWM 构建于 GlazeWM 之上，因此上游能用的功能这里都能用。如果您遇到问题，请先确认它
 > 在上游 GlazeWM 上是否同样存在。
+>
+> **GlideWM 仅支持 Windows。** 上游项目同时支持 macOS，但这个分支不构建、不打包、也不
+> 支持 macOS。macOS 的代码仍然保留在仓库中（继承自上游），未作改动，以便日后合并上游
+> 的变更。
 
 ## 新增功能
 
@@ -90,28 +94,25 @@ GlazeWM 直接移动真实窗口，因此窗口动画要么缺失，要么会卡
 
 ## 安装
 
-GlideWM 通过源码构建和安装。需要 Rust 工具链（需要 nightly）以及 Windows 10 或 11。
+GlideWM **仅支持 Windows**，通过源码构建和安装。需要 Rust 工具链，请通过
+[rustup](https://rustup.rs) 安装，因为构建需要 nightly。
 
 ```sh
 git clone https://github.com/JASSIM-ALHUMAID/glazewm.git
 cd glazewm
-
-cargo build --release -p wm --features ui_access
-cargo build --release -p wm-watcher -p wm-cli
-
 ./resources/scripts/install-local.ps1
 ```
 
-安装脚本会创建一个自签名代码签名证书，用它给二进制文件签名，把它们复制到
-`C:\Program Files\GlideWM`，注册 GlideWM 开机自启，然后启动它。脚本需要管理员权限，
-因此会弹出一次 UAC 提示。
+就这些。脚本会构建 release 二进制文件，创建一个自签名代码签名证书，用它给二进制文件
+签名，把它们复制到 `C:\Program Files\GlideWM`，注册 GlideWM 开机自启，然后启动它。
+脚本需要管理员权限，因此会弹出一次 UAC 提示。
+
+构建是增量的，因此在 `git pull` 之后重新运行脚本只会重新构建发生变化的部分。传入
+`-SkipBuild` 可以直接安装 `target\release` 中已有的二进制文件。
 
 `ui_access` 特性让 GlideWM 无需以管理员身份运行就能管理提权窗口（例如任务管理器）。
-如果只想在本地快速试用，可以不带该特性构建：
-
-```sh
-cargo build --release -p wm
-```
+它需要一个*受信任的*签名，这正是自签名证书的作用。这也是脚本要把二进制文件安装到
+Program Files 并在计算机上信任该证书的原因。
 
 ### 命令行工具
 

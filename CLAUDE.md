@@ -1,5 +1,7 @@
 <project_overview>
-GlideWM is a window manager for macOS and Windows, written in Rust.
+GlideWM is a window manager for Windows, written in Rust. It is a fork of
+[GlazeWM](https://github.com/glzr-io/glazewm) and is Windows only: the macOS platform
+layer is inherited from upstream and left untouched, but is not built or supported here.
 
 Crate structure:
 
