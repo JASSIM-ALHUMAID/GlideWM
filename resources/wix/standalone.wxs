@@ -2,8 +2,8 @@
   <Package
     Name="GlideWM"
     Version="$(var.VERSION_NUMBER)"
-    UpgradeCode="ef0f849b-d90d-4647-bb26-730c6fce5f9e"
-    Manufacturer="Glzr Software Pte. Ltd."
+    UpgradeCode="97878f01-fb80-4f7f-9deb-638c77a8bc22"
+    Manufacturer="Jassim Alhumaid"
     Language="1033"
     Scope="perMachine"
   >
@@ -40,31 +40,29 @@
     </Feature>
 
     <StandardDirectory Id="ProgramFiles6432Folder">
-      <Directory Id="Custom_OrgDir" Name="glzr.io">
-        <Directory Id="INSTALLFOLDER" Name="GlideWM">
-          <Component Id="Custom_CreateInstallDir">
-            <RegistryValue
-              Root="HKLM"
-              Key="SOFTWARE\glzr.io\GlideWM"
-              Name="InstallDir"
-              Value="[INSTALLFOLDER]"
-              Type="string"
-              KeyPath="yes"
-            />
-          </Component>
+      <Directory Id="INSTALLFOLDER" Name="GlideWM">
+        <Component Id="Custom_CreateInstallDir">
+          <RegistryValue
+            Root="HKLM"
+            Key="SOFTWARE\GlideWM"
+            Name="InstallDir"
+            Value="[INSTALLFOLDER]"
+            Type="string"
+            KeyPath="yes"
+          />
+        </Component>
 
-          <!-- Add main + watcher executable. -->
-          <Component Id="Custom_InstallRootFiles" Guid="73752F94-6589-4C7B-ABED-39D655A19714">
-            <File Id="Custom_RootExe" Source="$(var.EXE_DIR)/glidewm.exe" KeyPath="yes" />
-            <File Id="Custom_RootWatcherExe" Source="$(var.EXE_DIR)/glidewm-watcher.exe" />
-          </Component>
+        <!-- Add main + watcher executable. -->
+        <Component Id="Custom_InstallRootFiles" Guid="e74a12d4-2de4-47ee-9544-51a00018e5cd">
+          <File Id="Custom_RootExe" Source="$(var.EXE_DIR)/glidewm.exe" KeyPath="yes" />
+          <File Id="Custom_RootWatcherExe" Source="$(var.EXE_DIR)/glidewm-watcher.exe" />
+        </Component>
 
-          <!-- Add CLI executable. -->
-          <Directory Id="Custom_CliDir" Name="cli">
-            <Component Id="Custom_InstallCliFiles" Guid="916284d8-100c-4f37-8d8c-2722b01cb3dd">
-              <File Id="Custom_CliExe" Source="$(var.EXE_DIR)/glidewm-cli.exe" Name="glidewm.exe" KeyPath="yes" />
-            </Component>
-          </Directory>
+        <!-- Add CLI executable. -->
+        <Directory Id="Custom_CliDir" Name="cli">
+          <Component Id="Custom_InstallCliFiles" Guid="b5584ad7-70a3-4d0a-a736-681357f02e2d">
+            <File Id="Custom_CliExe" Source="$(var.EXE_DIR)/glidewm-cli.exe" Name="glidewm.exe" KeyPath="yes" />
+          </Component>
         </Directory>
       </Directory>
     </StandardDirectory>
@@ -81,7 +79,7 @@
 
         <RegistryValue
           Root="HKLM"
-          Key="SOFTWARE\glzr.io\GlideWM"
+          Key="SOFTWARE\GlideWM"
           Name="DesktopShortcutInstalled"
           Type="integer"
           Value="1"
@@ -102,7 +100,7 @@
 
         <RegistryValue
           Root="HKLM"
-          Key="SOFTWARE\glzr.io\GlideWM"
+          Key="SOFTWARE\GlideWM"
           Name="StartMenuShortcutInstalled"
           Type="integer"
           Value="1"
@@ -112,7 +110,7 @@
     </StandardDirectory>
 
     <!-- Add CLI directory to PATH. -->
-    <Component Id="Custom_AddPathEnv" Guid="66a4be46-19ae-4ed4-944f-b01673887f64" KeyPath="yes">
+    <Component Id="Custom_AddPathEnv" Guid="726ff976-09f2-41bd-b0ea-877058fbf5f1" KeyPath="yes">
       <Environment
         Id="Custom_PathEnv"
         Value="[INSTALLFOLDER]\cli"
@@ -125,11 +123,11 @@
     </Component>
 
     <!-- Remove auto-launch registry values on uninstall. -->
-    <Component Id="Custom_RemoveAutoLaunchRegistry" Guid="B1A2C3D4-E5F6-47A8-9B0C-1234567890AB">
+    <Component Id="Custom_RemoveAutoLaunchRegistry" Guid="2d3bf9ac-a44a-4d9c-be05-a49b9367659c">
       <!-- `RegistryValue` with `KeyPath="yes"` is needed for component state tracking. -->
       <RegistryValue
         Root="HKLM"
-        Key="SOFTWARE\glzr.io\GlideWM"
+        Key="SOFTWARE\GlideWM"
         Name="AutoLaunchCleanup"
         Type="integer"
         Value="1"

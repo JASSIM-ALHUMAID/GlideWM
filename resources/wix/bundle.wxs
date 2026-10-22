@@ -3,8 +3,8 @@
   xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
   xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
   <Bundle Name="GlideWM" Version="$(var.VERSION_NUMBER)"
-    UpgradeCode="f57adff3-4521-4a6b-87b1-d34a7d9bae1e"
-    Manufacturer="Glzr Software Pte. Ltd."
+    UpgradeCode="b820b1c1-e464-4107-b0e2-c672e4367bc6"
+    Manufacturer="Jassim Alhumaid"
     DisableModify="yes"
     DisableRemove="yes"
     IconSourceFile="resources/assets/icon.ico"
