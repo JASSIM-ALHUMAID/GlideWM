@@ -9,17 +9,187 @@ use wm_platform::{
 
 use crate::{app_command::InvokeCommand, TilingDirection};
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(default, rename_all(serialize = "camelCase"))]
+/// Parsed user config.
+///
+/// The config is deserialized through [`RawParsedConfig`], which resolves
+/// the global layout config and the per-workspace overrides into fully
+/// populated workspace configs.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all(serialize = "camelCase"))]
 pub struct ParsedConfig {
   pub binding_modes: Vec<BindingModeConfig>,
   pub gaps: GapsConfig,
   pub general: GeneralConfig,
   pub keybindings: Vec<KeybindingConfig>,
+
+  /// Layout config shared by all workspaces.
+  pub layout: LayoutsConfig,
+
   pub window_behavior: WindowBehaviorConfig,
   pub window_effects: WindowEffectsConfig,
   pub window_rules: Vec<WindowRuleConfig>,
   pub workspaces: Vec<WorkspaceConfig>,
+}
+
+impl<'de> Deserialize<'de> for ParsedConfig {
+  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+  where
+    D: serde::Deserializer<'de>,
+  {
+    RawParsedConfig::deserialize(deserializer)
+      .map(RawParsedConfig::resolve)
+  }
+}
+
+/// Raw (unresolved) user config.
+///
+/// The raw config mirrors the user-facing config file: layout options
+/// can be set globally and overridden per workspace. Resolving it
+/// produces a [`ParsedConfig`] whose workspace configs are fully
+/// populated.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+struct RawParsedConfig {
+  binding_modes: Vec<BindingModeConfig>,
+  gaps: GapsConfig,
+  general: GeneralConfig,
+  keybindings: Vec<KeybindingConfig>,
+  layout: LayoutsConfig,
+  window_behavior: WindowBehaviorConfig,
+  window_effects: WindowEffectsConfig,
+  window_rules: Vec<WindowRuleConfig>,
+  workspaces: Vec<RawWorkspaceConfig>,
+}
+
+impl RawParsedConfig {
+  /// Resolves the raw config into a fully populated config.
+  ///
+  /// The global layout config is merged with the per-workspace
+  /// overrides, field by field. The workspace-level `scroll` and `bsp`
+  /// blocks are deprecated aliases of `layout_overrides`, and are merged
+  /// before the new keys.
+  fn resolve(self) -> ParsedConfig {
+    let RawParsedConfig {
+      binding_modes,
+      gaps,
+      general,
+      keybindings,
+      layout,
+      window_behavior,
+      window_effects,
+      window_rules,
+      workspaces: raw_workspaces,
+    } = self;
+
+    if general.layout_switch.is_some() {
+      tracing::warn!(
+        "The `general.layout_switch` config option is deprecated. Use \
+         `layout.switch_behavior` instead."
+      );
+    }
+
+    let switch_behavior = layout.switch_behavior.or(general.layout_switch);
+
+    let workspaces = raw_workspaces
+      .into_iter()
+      .map(|workspace| {
+        if !workspace.scroll.is_empty() {
+          tracing::warn!(
+            "The `scroll` workspace config option is deprecated. Use \
+             `layout_overrides.scrolling` instead."
+          );
+        }
+
+        if !workspace.bsp.is_empty() {
+          tracing::warn!(
+            "The `bsp` workspace config option is deprecated. Use \
+             `layout_overrides.bsp` instead."
+          );
+        }
+
+        let scroll = workspace
+          .layout_overrides
+          .scrolling
+          .apply_to(&workspace.scroll.apply_to(&layout.scrolling));
+
+        let bsp = workspace
+          .layout_overrides
+          .bsp
+          .apply_to(&workspace.bsp.apply_to(&layout.bsp));
+
+        WorkspaceConfig {
+          name: workspace.name,
+          display_name: workspace.display_name,
+          bind_to_monitor: workspace.bind_to_monitor,
+          keep_alive: workspace.keep_alive,
+          layout: workspace.layout.unwrap_or(layout.default.clone()),
+          scroll,
+          bsp,
+          layout_switch: Some(
+            workspace
+              .layout_switch
+              .or(switch_behavior)
+              .unwrap_or_default(),
+          ),
+        }
+      })
+      .collect();
+
+    ParsedConfig {
+      binding_modes,
+      gaps,
+      general,
+      keybindings,
+      layout,
+      window_behavior,
+      window_effects,
+      window_rules,
+      workspaces,
+    }
+  }
+}
+
+/// Raw (unresolved) workspace config.
+#[derive(Clone, Debug, Deserialize)]
+struct RawWorkspaceConfig {
+  /// Name of the workspace.
+  name: String,
+
+  /// Display name of the workspace.
+  #[serde(default)]
+  display_name: Option<String>,
+
+  /// Index of the monitor that the workspace is bound to.
+  #[serde(default)]
+  bind_to_monitor: Option<u32>,
+
+  /// Whether the workspace is kept alive when it becomes empty.
+  #[serde(default = "default_bool::<false>")]
+  keep_alive: bool,
+
+  /// Layout that the workspace uses. When unset, `layout.default` is
+  /// used.
+  #[serde(default)]
+  layout: Option<WorkspaceLayout>,
+
+  /// Deprecated. Partial overrides for the options of the scrolling
+  /// layout. Merged before `layout_overrides`.
+  #[serde(default)]
+  scroll: ScrollConfigOverrides,
+
+  /// Deprecated. Partial overrides for the options of the BSP layout.
+  /// Merged before `layout_overrides`.
+  #[serde(default)]
+  bsp: BspConfigOverrides,
+
+  /// Partial overrides for the layout options of this workspace.
+  #[serde(default)]
+  layout_overrides: LayoutOverrides,
+
+  /// What happens to the existing windows of the workspace when its
+  /// layout is switched. When unset, `layout.switch_behavior` is used.
+  #[serde(default)]
+  layout_switch: Option<LayoutSwitchBehavior>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -101,8 +271,12 @@ pub struct GeneralConfig {
   pub show_all_in_taskbar: bool,
 
   /// What happens to the existing windows of a workspace when its layout
-  /// is switched. Can be overridden per workspace.
-  pub layout_switch: LayoutSwitchBehavior,
+  /// is switched.
+  ///
+  /// Deprecated: use `layout.switch_behavior` instead. When unset, the
+  /// value of `layout.switch_behavior` is used.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub layout_switch: Option<LayoutSwitchBehavior>,
 
   /// Config for animating window positions.
   pub animations: AnimationsConfig,
@@ -128,7 +302,7 @@ impl Default for GeneralConfig {
         }
       },
       show_all_in_taskbar: false,
-      layout_switch: LayoutSwitchBehavior::default(),
+      layout_switch: None,
       animations: AnimationsConfig::default(),
     }
   }
@@ -632,6 +806,8 @@ pub struct WorkspaceConfig {
 
   /// Layout that the workspace uses: `'tiling'` (default),
   /// `'scrolling'`, or `'bsp'`.
+  ///
+  /// When unset in the config file, `layout.default` is used.
   #[serde(default)]
   pub layout: WorkspaceLayout,
 
@@ -645,13 +821,180 @@ pub struct WorkspaceConfig {
   pub bsp: BspConfig,
 
   /// What happens to the existing windows of the workspace when its
-  /// layout is switched. Defaults to `general.layout_switch`.
+  /// layout is switched. Defaults to `layout.switch_behavior`.
   #[serde(default)]
   pub layout_switch: Option<LayoutSwitchBehavior>,
 }
 
+/// Global layout config, shared by all workspaces.
+///
+/// Workspaces inherit the values of this config and can override them
+/// individually (see [`LayoutOverrides`]).
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields, rename_all(serialize = "camelCase"))]
+pub struct LayoutsConfig {
+  /// Layout used by workspaces that don't set their own `layout`.
+  pub default: WorkspaceLayout,
+
+  /// What happens to the existing windows of a workspace when its layout
+  /// is switched.
+  ///
+  /// When unset, the deprecated `general.layout_switch` is used as a
+  /// fallback.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub switch_behavior: Option<LayoutSwitchBehavior>,
+
+  /// Options for the tiling layout.
+  #[serde(default, deserialize_with = "deserialize_tiling_config")]
+  pub tiling: TilingConfig,
+
+  /// Options for the scrolling layout.
+  pub scrolling: ScrollConfig,
+
+  /// Options for the BSP layout.
+  pub bsp: BspConfig,
+}
+
+/// Options for the tiling layout.
+///
+/// The tiling layout has no configurable options yet. The block exists
+/// so that future options have a home.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields, rename_all(serialize = "camelCase"))]
+pub struct TilingConfig {}
+
+/// Partial overrides for the layout options of a workspace.
+///
+/// The overrides are keyed by layout name, so that a workspace can keep
+/// its preferred options for every layout — even for layouts that it
+/// doesn't currently use.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields, rename_all(serialize = "camelCase"))]
+pub struct LayoutOverrides {
+  /// Overrides for the options of the tiling layout.
+  #[serde(default, deserialize_with = "deserialize_tiling_config")]
+  pub tiling: TilingConfig,
+
+  /// Overrides for the options of the scrolling layout.
+  pub scrolling: ScrollConfigOverrides,
+
+  /// Overrides for the options of the BSP layout.
+  pub bsp: BspConfigOverrides,
+}
+
+/// Partial overrides for the options of the scrolling layout.
+///
+/// Fields that aren't set inherit the value of the global layout config.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields, rename_all(serialize = "camelCase"))]
+pub struct ScrollConfigOverrides {
+  /// Axis that the strip of windows scrolls along.
+  pub axis: Option<TilingDirection>,
+
+  /// Default width of new strip items as a fraction of the viewport
+  /// width. Used while the scroll axis is horizontal.
+  pub window_width: Option<f32>,
+
+  /// Default height of new strip items as a fraction of the viewport
+  /// height. Used while the scroll axis is vertical.
+  pub window_height: Option<f32>,
+
+  /// Widths that the `cycle-preset-size` command cycles the focused
+  /// strip item through, for a horizontal scroll axis.
+  #[serde(
+    default,
+    deserialize_with = "deserialize_optional_preset_sizes"
+  )]
+  pub preset_widths: Option<Vec<f32>>,
+
+  /// Heights that the `cycle-preset-size` command cycles the focused
+  /// strip item through, for a vertical scroll axis.
+  #[serde(
+    default,
+    deserialize_with = "deserialize_optional_preset_sizes"
+  )]
+  pub preset_heights: Option<Vec<f32>>,
+
+  /// How the focused strip item is scrolled into view.
+  pub align: Option<ScrollAlign>,
+
+  /// Where new strip items are inserted.
+  pub insert_position: Option<ScrollInsertPosition>,
+
+  /// How windows that are scrolled out of the viewport are kept out of
+  /// view.
+  pub offscreen_windows: Option<OffscreenWindows>,
+}
+
+impl ScrollConfigOverrides {
+  /// Applies the overrides that are set on top of the given config.
+  #[must_use]
+  pub fn apply_to(&self, base: &ScrollConfig) -> ScrollConfig {
+    ScrollConfig {
+      axis: self.axis.clone().unwrap_or_else(|| base.axis.clone()),
+      window_width: self.window_width.unwrap_or(base.window_width),
+      window_height: self.window_height.unwrap_or(base.window_height),
+      preset_widths: self
+        .preset_widths
+        .clone()
+        .unwrap_or_else(|| base.preset_widths.clone()),
+      preset_heights: self
+        .preset_heights
+        .clone()
+        .unwrap_or_else(|| base.preset_heights.clone()),
+      align: self.align.clone().unwrap_or_else(|| base.align.clone()),
+      insert_position: self
+        .insert_position
+        .clone()
+        .unwrap_or_else(|| base.insert_position.clone()),
+      offscreen_windows: self
+        .offscreen_windows
+        .unwrap_or(base.offscreen_windows),
+    }
+  }
+
+  /// Whether no overrides are set.
+  #[must_use]
+  pub fn is_empty(&self) -> bool {
+    *self == Self::default()
+  }
+}
+
+/// Partial overrides for the options of the BSP layout.
+///
+/// Fields that aren't set inherit the value of the global layout config.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields, rename_all(serialize = "camelCase"))]
+pub struct BspConfigOverrides {
+  /// How the direction of a new split is chosen when a window splits the
+  /// focused window's space.
+  pub automatic_scheme: Option<BspAutomaticScheme>,
+}
+
+impl BspConfigOverrides {
+  /// Applies the overrides that are set on top of the given config.
+  #[must_use]
+  pub fn apply_to(&self, base: &BspConfig) -> BspConfig {
+    BspConfig {
+      automatic_scheme: self
+        .automatic_scheme
+        .clone()
+        .unwrap_or_else(|| base.automatic_scheme.clone()),
+    }
+  }
+
+  /// Whether no overrides are set.
+  #[must_use]
+  pub fn is_empty(&self) -> bool {
+    *self == Self::default()
+  }
+}
+
 /// What happens to the existing windows of a workspace when its layout
 /// is switched (via `set-layout`, `cycle-layout`, or a config reload).
+///
+/// Configured globally via `layout.switch_behavior`, and overridable per
+/// workspace.
 #[derive(
   Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize,
 )]
@@ -660,7 +1003,6 @@ pub enum LayoutSwitchBehavior {
   /// Existing windows are rearranged into the new layout (e.g. switching
   /// to `bsp` rebuilds them as a binary tree, and switching from `bsp`
   /// to `scrolling` turns its windows into separate strip items).
-  #[default]
   Reflow,
 
   /// Existing windows keep their arrangement; only windows that are
@@ -668,6 +1010,7 @@ pub enum LayoutSwitchBehavior {
   /// adjusted where the new layout requires it (e.g. strip items that
   /// add up to more than the viewport are scaled down to fit when
   /// switching to `tiling`).
+  #[default]
   Keep,
 }
 
@@ -676,11 +1019,11 @@ pub enum LayoutSwitchBehavior {
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceLayout {
   /// Children share the viewport (existing behavior).
-  #[default]
   Tiling,
 
   /// Children form a strip along the scroll axis. The viewport scrolls
   /// to keep the focused child in view.
+  #[default]
   Scrolling,
 
   /// Children form a binary tree of split containers ("binary space
@@ -740,7 +1083,7 @@ impl WorkspaceLayout {
 
 /// Options for the scrolling layout.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(default, rename_all(serialize = "camelCase"))]
+#[serde(default, deny_unknown_fields, rename_all(serialize = "camelCase"))]
 pub struct ScrollConfig {
   /// Axis that the strip of windows scrolls along.
   pub axis: TilingDirection,
@@ -838,14 +1181,14 @@ impl ScrollConfig {
 impl Default for ScrollConfig {
   fn default() -> Self {
     ScrollConfig {
-      axis: TilingDirection::Horizontal,
-      window_width: 0.5,
-      window_height: 0.5,
-      preset_widths: vec![1. / 3., 0.5, 2. / 3., 1.0],
+      axis: TilingDirection::Vertical,
+      window_width: 0.7,
+      window_height: 0.7,
+      preset_widths: vec![0.3, 0.5, 0.7, 1.0],
       preset_heights: vec![0.5, 1.0],
-      align: ScrollAlign::Minimal,
+      align: ScrollAlign::Center,
       insert_position: ScrollInsertPosition::AfterFocused,
-      offscreen_windows: OffscreenWindows::default(),
+      offscreen_windows: OffscreenWindows::Park,
     }
   }
 }
@@ -864,6 +1207,43 @@ where
 {
   let sizes = Vec::<f32>::deserialize(deserializer)?;
   normalize_preset_sizes(sizes).map_err(serde::de::Error::custom)
+}
+
+/// Helper function for deserializing optional preset sizes of the
+/// scrolling layout.
+///
+/// Sizes are clamped to the range of valid viewport fractions, then
+/// sorted and deduplicated. Returns an error for an empty list or for
+/// non-finite values.
+fn deserialize_optional_preset_sizes<'de, D>(
+  deserializer: D,
+) -> Result<Option<Vec<f32>>, D::Error>
+where
+  D: serde::de::Deserializer<'de>,
+{
+  let sizes = Option::<Vec<f32>>::deserialize(deserializer)?;
+
+  match sizes {
+    None => Ok(None),
+    Some(sizes) => normalize_preset_sizes(sizes)
+      .map(Some)
+      .map_err(serde::de::Error::custom),
+  }
+}
+
+/// Helper function for deserializing the tiling config.
+///
+/// The tiling layout has no options yet, so both an empty block
+/// (`tiling: {}`) and an empty value (`tiling:`) are accepted.
+fn deserialize_tiling_config<'de, D>(
+  deserializer: D,
+) -> Result<TilingConfig, D::Error>
+where
+  D: serde::de::Deserializer<'de>,
+{
+  Ok(
+    Option::<TilingConfig>::deserialize(deserializer)?.unwrap_or_default(),
+  )
 }
 
 /// Clamps, sorts, and deduplicates preset sizes of the scrolling layout.
@@ -921,7 +1301,7 @@ pub enum ScrollInsertPosition {
 
 /// Options for the BSP layout.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
-#[serde(default, rename_all(serialize = "camelCase"))]
+#[serde(default, deny_unknown_fields, rename_all(serialize = "camelCase"))]
 pub struct BspConfig {
   /// How the direction of a new split is chosen when a window splits
   /// the focused window's space.
@@ -1036,17 +1416,41 @@ where
 mod tests {
   use super::*;
 
+  /// Parses a config from the given YAML string.
+  ///
+  /// The common leading whitespace of the YAML is stripped, so that it
+  /// can be written as an indented block.
+  fn parse_config(yaml: &str) -> Result<ParsedConfig, serde_yaml::Error> {
+    let indent = yaml
+      .lines()
+      .filter(|line| !line.trim().is_empty())
+      .map(|line| line.len() - line.trim_start().len())
+      .min()
+      .unwrap_or(0);
+
+    let yaml = yaml
+      .lines()
+      .map(|line| &line[indent.min(line.len())..])
+      .collect::<Vec<_>>()
+      .join("\n");
+
+    serde_yaml::from_str(&yaml)
+  }
+
   /// The cycle order in [`WorkspaceLayout::ALL`] must match what
   /// repeatedly calling [`WorkspaceLayout::next`] produces.
   #[test]
   fn cycle_order_matches_all_layouts() {
-    let cycle =
-      std::iter::successors(Some(WorkspaceLayout::default()), |layout| {
-        let next = layout.next();
-        (next != WorkspaceLayout::default()).then_some(next)
-      })
-      .collect::<Vec<_>>();
+    let mut cycle = Vec::new();
+    let mut layout = WorkspaceLayout::ALL[0].clone();
 
+    for _ in 0..WorkspaceLayout::ALL.len() {
+      cycle.push(layout.clone());
+      layout = layout.next();
+    }
+
+    // The cycle wraps around back to the first layout.
+    assert_eq!(layout, WorkspaceLayout::ALL[0]);
     assert_eq!(cycle, WorkspaceLayout::ALL);
   }
 
@@ -1132,5 +1536,346 @@ mod tests {
     assert!(
       serde_yaml::from_str::<ScrollConfig>("preset_heights: []").is_err()
     );
+  }
+
+  #[test]
+  fn defaults_without_layout_block() {
+    let config = parse_config(
+      r"
+      workspaces:
+        - name: '1'
+      ",
+    )
+    .unwrap();
+
+    assert_eq!(config.layout, LayoutsConfig::default());
+
+    let workspace = &config.workspaces[0];
+
+    assert_eq!(workspace.layout, WorkspaceLayout::Scrolling);
+    assert_eq!(workspace.scroll, ScrollConfig::default());
+    assert_eq!(workspace.bsp, BspConfig::default());
+    assert_eq!(workspace.layout_switch, Some(LayoutSwitchBehavior::Keep));
+  }
+
+  #[test]
+  fn workspace_inherits_default_layout() {
+    let config = parse_config(
+      r"
+      layout:
+        default: 'scrolling'
+      workspaces:
+        - name: '1'
+      ",
+    )
+    .unwrap();
+
+    assert_eq!(config.workspaces[0].layout, WorkspaceLayout::Scrolling);
+  }
+
+  #[test]
+  fn explicit_workspace_layout_wins() {
+    let config = parse_config(
+      r"
+      layout:
+        default: 'scrolling'
+      workspaces:
+        - name: '1'
+          layout: 'tiling'
+      ",
+    )
+    .unwrap();
+
+    assert_eq!(config.workspaces[0].layout, WorkspaceLayout::Tiling);
+  }
+
+  #[test]
+  fn workspace_overrides_are_partial() {
+    let config = parse_config(
+      r"
+      layout:
+        scrolling:
+          window_width: 0.5
+          align: 'center'
+      workspaces:
+        - name: '1'
+          layout_overrides:
+            scrolling:
+              window_width: 0.8
+      ",
+    )
+    .unwrap();
+
+    let scroll = &config.workspaces[0].scroll;
+
+    assert!((scroll.window_width - 0.8).abs() < f32::EPSILON);
+
+    // The other options are inherited from the global config.
+    assert_eq!(scroll.align, ScrollAlign::Center);
+    assert_eq!(scroll.axis, ScrollConfig::default().axis);
+  }
+
+  #[test]
+  fn legacy_scroll_block_merges_with_global() {
+    let config = parse_config(
+      r"
+      layout:
+        scrolling:
+          window_width: 0.5
+          align: 'center'
+      workspaces:
+        - name: '1'
+          scroll:
+            window_width: 0.8
+      ",
+    )
+    .unwrap();
+
+    let scroll = &config.workspaces[0].scroll;
+
+    assert!((scroll.window_width - 0.8).abs() < f32::EPSILON);
+    assert_eq!(scroll.align, ScrollAlign::Center);
+  }
+
+  #[test]
+  fn new_overrides_beat_legacy_overrides() {
+    let config = parse_config(
+      r"
+      workspaces:
+        - name: '1'
+          scroll:
+            window_width: 0.3
+          layout_overrides:
+            scrolling:
+              window_width: 0.8
+      ",
+    )
+    .unwrap();
+
+    let scroll = &config.workspaces[0].scroll;
+
+    assert!((scroll.window_width - 0.8).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn bsp_overrides_are_partial() {
+    let config = parse_config(
+      r"
+      layout:
+        bsp:
+          automatic_scheme: 'alternate'
+      workspaces:
+        - name: '1'
+          layout_overrides:
+            bsp:
+              automatic_scheme: 'longest_side'
+      ",
+    )
+    .unwrap();
+
+    assert_eq!(
+      config.workspaces[0].bsp.automatic_scheme,
+      BspAutomaticScheme::LongestSide
+    );
+  }
+
+  #[test]
+  fn legacy_and_new_config_resolve_identically() {
+    let legacy = parse_config(
+      r"
+      general:
+        layout_switch: 'keep'
+      workspaces:
+        - name: '1'
+          layout: 'scrolling'
+          scroll:
+            window_width: 0.8
+            align: 'center'
+          bsp:
+            automatic_scheme: 'alternate'
+          layout_switch: 'reflow'
+      ",
+    )
+    .unwrap();
+
+    let new = parse_config(
+      r"
+      layout:
+        switch_behavior: 'keep'
+        scrolling:
+          window_width: 0.8
+          align: 'center'
+        bsp:
+          automatic_scheme: 'alternate'
+      workspaces:
+        - name: '1'
+          layout: 'scrolling'
+          layout_switch: 'reflow'
+      ",
+    )
+    .unwrap();
+
+    assert_eq!(legacy.workspaces, new.workspaces);
+  }
+
+  #[test]
+  fn preset_sizes_are_normalized_in_overrides() {
+    let config = parse_config(
+      r"
+      workspaces:
+        - name: '1'
+          layout_overrides:
+            scrolling:
+              preset_widths: [1.0, 0.25, 0.25]
+      ",
+    )
+    .unwrap();
+
+    assert_eq!(config.workspaces[0].scroll.preset_widths, vec![0.25, 1.0]);
+
+    // An empty list is invalid.
+    assert!(parse_config(
+      r"
+      workspaces:
+        - name: '1'
+          layout_overrides:
+            scrolling:
+              preset_widths: []
+      ",
+    )
+    .is_err());
+  }
+
+  #[test]
+  fn switch_behavior_precedence() {
+    // The workspace config takes precedence over the global config.
+    let config = parse_config(
+      r"
+      layout:
+        switch_behavior: 'keep'
+      workspaces:
+        - name: '1'
+          layout_switch: 'reflow'
+      ",
+    )
+    .unwrap();
+
+    assert_eq!(
+      config.workspaces[0].layout_switch,
+      Some(LayoutSwitchBehavior::Reflow)
+    );
+
+    // The global config takes precedence over the deprecated config.
+    let config = parse_config(
+      r"
+      general:
+        layout_switch: 'reflow'
+      layout:
+        switch_behavior: 'keep'
+      workspaces:
+        - name: '1'
+      ",
+    )
+    .unwrap();
+
+    assert_eq!(
+      config.workspaces[0].layout_switch,
+      Some(LayoutSwitchBehavior::Keep)
+    );
+
+    // The deprecated config is used when the global config is unset.
+    let config = parse_config(
+      r"
+      general:
+        layout_switch: 'keep'
+      workspaces:
+        - name: '1'
+      ",
+    )
+    .unwrap();
+
+    assert_eq!(
+      config.workspaces[0].layout_switch,
+      Some(LayoutSwitchBehavior::Keep)
+    );
+
+    // The default is used when neither config is set.
+    let config = parse_config(
+      r"
+      workspaces:
+        - name: '1'
+      ",
+    )
+    .unwrap();
+
+    assert_eq!(
+      config.workspaces[0].layout_switch,
+      Some(LayoutSwitchBehavior::Keep)
+    );
+  }
+
+  #[test]
+  fn tiling_block_is_accepted() {
+    let config = parse_config(
+      r"
+      layout:
+        tiling: {}
+      ",
+    )
+    .unwrap();
+
+    assert_eq!(config.layout.tiling, TilingConfig::default());
+
+    // An empty value is accepted as well.
+    let config = parse_config(
+      r"
+      layout:
+        tiling:
+      ",
+    )
+    .unwrap();
+
+    assert_eq!(config.layout.tiling, TilingConfig::default());
+
+    // Unknown keys are rejected.
+    assert!(parse_config(
+      r"
+      layout:
+        tiling:
+          unknown: 1
+      ",
+    )
+    .is_err());
+
+    assert!(parse_config(
+      r"
+        layout:
+          unknown: 1
+        ",
+    )
+    .is_err());
+  }
+
+  #[test]
+  fn rejects_unknown_layout_options() {
+    assert!(parse_config(
+      r"
+      layout:
+        scrolling:
+          window_widht: 0.5
+      ",
+    )
+    .is_err());
+
+    assert!(parse_config(
+      r"
+      workspaces:
+        - name: '1'
+          layout_overrides:
+            scrolling:
+              window_widht: 0.5
+      ",
+    )
+    .is_err());
   }
 }

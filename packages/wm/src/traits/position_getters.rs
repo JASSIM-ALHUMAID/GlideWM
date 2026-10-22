@@ -165,12 +165,17 @@ mod tests {
 
   #[test]
   fn scrolls_focused_window_into_view() {
+    // The test covers the minimal-scroll behavior, so the alignment is
+    // pinned instead of relying on the default.
     let (workspace, windows) = mock_scrolling_workspace(
       wm_common::TilingDirection::Horizontal,
       3,
       0.5,
       &GapsConfig::default(),
-      ScrollConfig::default(),
+      ScrollConfig {
+        align: ScrollAlign::Minimal,
+        ..ScrollConfig::default()
+      },
     );
 
     // The third window is out of view at offset 0.

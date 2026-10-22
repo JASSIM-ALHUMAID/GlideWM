@@ -555,14 +555,16 @@ pub fn window_placement(
 
 /// How the existing windows of a workspace are treated when its layout
 /// is switched: the workspace's own `layout_switch` config, falling back
-/// to `general.layout_switch`.
+/// to the global `layout.switch_behavior` config.
 pub fn layout_switch_behavior(
   workspace_config: &WorkspaceConfig,
   config: &UserConfig,
 ) -> LayoutSwitchBehavior {
   workspace_config
     .layout_switch
-    .unwrap_or(config.value.general.layout_switch)
+    .or(config.value.layout.switch_behavior)
+    .or(config.value.general.layout_switch)
+    .unwrap_or_default()
 }
 
 /// Adjusts a workspace's state after its layout was switched.
@@ -733,12 +735,27 @@ mod tests {
     let mut config = UserConfig::mock();
     let mut workspace_config = Workspace::mock().call().config();
 
+    // The built-in default is used when nothing is set.
+    assert_eq!(
+      layout_switch_behavior(&workspace_config, &config),
+      LayoutSwitchBehavior::Keep
+    );
+
+    // The global layout config takes precedence over the deprecated
+    // `general.layout_switch` config.
+    config.value.layout.switch_behavior =
+      Some(LayoutSwitchBehavior::Reflow);
+    config.value.general.layout_switch = Some(LayoutSwitchBehavior::Keep);
+
     assert_eq!(
       layout_switch_behavior(&workspace_config, &config),
       LayoutSwitchBehavior::Reflow
     );
 
-    config.value.general.layout_switch = LayoutSwitchBehavior::Keep;
+    // The deprecated config is used when the global layout config is
+    // unset.
+    config.value.layout.switch_behavior = None;
+
     assert_eq!(
       layout_switch_behavior(&workspace_config, &config),
       LayoutSwitchBehavior::Keep

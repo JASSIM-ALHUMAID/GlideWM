@@ -16,7 +16,7 @@ general:
 
   # Whether to switch back and forth between the previously focused
   # workspace when focusing the current workspace.
-  toggle_workspace_on_refocus: false
+  toggle_workspace_on_refocus: true
 
   cursor_jump:
     # Whether to automatically move the cursor on the specified trigger.
@@ -39,14 +39,6 @@ general:
   # - 'true': Show all windows (regardless of workspace).
   # - 'false': Only show windows from the currently shown workspaces.
   show_all_in_taskbar: false
-
-  # What happens to the existing windows of a workspace when its layout is
-  # switched (via `set-layout`, `cycle-layout`, or a config reload). Can be
-  # overridden per workspace with `layout_switch`.
-  # - 'reflow': Existing windows are rearranged into the new layout.
-  # - 'keep': Existing windows keep their arrangement; only windows that
-  #   are added afterwards follow the new layout.
-  layout_switch: 'reflow'
 
   # Animate windows. Windows are animated via live compositor thumbnails,
   # so animations stay smooth regardless of how busy an application is.
@@ -132,6 +124,15 @@ gaps:
     bottom: '20px'
     left: '20px'
 
+  # Gap between a lone window and the screen edge. Only applies when the
+  # workspace has a single tiling window; `outer_gap` is used in every
+  # other case. Omit this key to use `outer_gap` everywhere.
+  #single_window_outer_gap:
+  #  top: '60px'
+  #  right: '20px'
+  #  bottom: '20px'
+  #  left: '20px'
+
 window_effects:
   # Visual effects to apply to the focused window.
   focused_window:
@@ -193,63 +194,109 @@ window_behavior:
     fullscreen:
       # Maximize the window if possible. If the window doesn't have a
       # maximize button, then it'll be fullscreen'ed normally instead.
-      maximized: false
+      maximized: true
 
       # Whether to show fullscreen windows as always on top.
       shown_on_top: false
 
+# Layout config shared by all workspaces. Workspaces inherit these
+# values and can override them individually.
+#
+# These are the defaults used by this fork. The built-in defaults differ
+# for `default` ('tiling'), `switch_behavior` ('reflow'), the scroll axis
+# ('horizontal'), the item sizes (0.5), `align` ('minimal'), and
+# `offscreen_windows` ('hide').
+layout:
+  # Layout used by workspaces that don't set their own `layout`.
+  # - 'tiling': Windows share the viewport.
+  # - 'scrolling': Windows form a strip along the scroll axis, and the
+  #   viewport scrolls to keep the focused window in view (inspired by
+  #   niri/PaperWM).
+  # - 'bsp': Windows form a binary tree of splits; inserting a window
+  #   splits the focused window's space in half (like bspwm).
+  default: 'scrolling'
+
+  # What happens to the existing windows of a workspace when its layout
+  # is switched (via `set-layout`, `cycle-layout`, or a config reload).
+  # Can be overridden per workspace with `layout_switch`.
+  # - 'reflow': Existing windows are rearranged into the new layout.
+  # - 'keep': Existing windows keep their arrangement; only windows that
+  #   are added afterwards follow the new layout.
+  switch_behavior: 'keep'
+
+  # Options for the tiling layout. The tiling layout has no options
+  # yet.
+  tiling: {}
+
+  # Options for the scrolling layout.
+  scrolling:
+    # Axis that the strip of windows scrolls along. Also the initial
+    # tiling direction of a scrolling workspace: `toggle-tiling-direction`
+    # flips it at runtime, and that change is not written back here.
+    axis: 'vertical'
+    # Default width of new windows as a fraction of the viewport
+    # width. Used while the scroll axis is horizontal.
+    window_width: 0.7
+    # Default height of new windows as a fraction of the viewport
+    # height. Used while the scroll axis is vertical.
+    window_height: 0.7
+    # Sizes that `cycle-preset-size` cycles the focused window
+    # through (fractions of the viewport), for a horizontal and a
+    # vertical scroll axis respectively.
+    preset_widths: [0.3, 0.5, 0.7, 1.0]
+    preset_heights: [0.5, 1.0]
+    # How the focused window is scrolled into view:
+    # - 'minimal': Scroll the least amount required (niri-like).
+    # - 'center': Center the focused window in the viewport.
+    align: 'center'
+    # Where new windows are inserted in the strip:
+    # - 'start': Insert at the start of the strip (top/left).
+    # - 'before_focused': Insert directly before the focused window.
+    # - 'after_focused': Insert directly after the focused window.
+    # - 'end': Append to the end of the strip (bottom/right).
+    insert_position: 'after_focused'
+    # How windows scrolled out of view are kept out of view:
+    # - 'hide': Hidden with the hide method (not listed in Alt+Tab).
+    # - 'park': Moved beyond the edges of all monitors while staying
+    #   shown, so they remain in Alt+Tab and the taskbar. Picking one
+    #   in Alt+Tab scrolls it into view.
+    offscreen_windows: 'park'
+
+  # Options for the BSP layout.
+  bsp:
+    # How the direction of a new split is chosen:
+    # - 'longest_side': Split the longer side of the focused window
+    #   (default, like bspwm).
+    # - 'alternate': Alternate the split direction with the depth of
+    #   the tree.
+    automatic_scheme: 'longest_side'
+
 workspaces:
   - name: '1'
-    # Layout used by the workspace.
-    # - 'tiling': Windows share the viewport (default).
+    # Optional display name for the workspace, used by 3rd-party apps
+    # (e.g. Zebar). Defaults to the workspace name.
+    #display_name: 'Work'
+    # Optionally prevent the workspace from being deactivated when it's
+    # empty. Defaults to false.
+    #keep_alive: false
+    # Layout used by the workspace. Overrides `layout.default`.
+    # - 'tiling': Windows share the viewport.
     # - 'scrolling': Windows form a strip along the scroll axis, and the
     #   viewport scrolls to keep the focused window in view (inspired by
     #   niri/PaperWM).
     # - 'bsp': Windows form a binary tree of splits; inserting a window
     #   splits the focused window's space in half (like bspwm).
-    layout: 'tiling'
-    # Options for the scrolling layout (only used when layout is
-    # 'scrolling').
-    #scroll:
-    #  # Axis that the strip of windows scrolls along.
-    #  axis: 'horizontal'
-    #  # Default width of new windows as a fraction of the viewport
-    #  # width. Used while the scroll axis is horizontal.
-    #  window_width: 0.5
-    #  # Default height of new windows as a fraction of the viewport
-    #  # height. Used while the scroll axis is vertical.
-    #  window_height: 0.5
-    #  # Sizes that `cycle-preset-size` cycles the focused window
-    #  # through (fractions of the viewport), for a horizontal and a
-    #  # vertical scroll axis respectively.
-    #  preset_widths: [0.333, 0.5, 0.667, 1.0]
-    #  preset_heights: [0.5, 1.0]
-    #  # How the focused window is scrolled into view:
-    #  # - 'minimal': Scroll the least amount required (niri-like).
-    #  # - 'center': Center the focused window in the viewport.
-    #  align: 'minimal'
-    #  # Where new windows are inserted in the strip:
-    #  # - 'start': Insert at the start of the strip (top/left).
-    #  # - 'before_focused': Insert directly before the focused window.
-    #  # - 'after_focused': Insert directly after the focused window.
-    #  # - 'end': Append to the end of the strip (bottom/right).
-    #  insert_position: 'after_focused'
-    #  # How windows scrolled out of view are kept out of view:
-    #  # - 'hide': Hidden with the hide method (not listed in Alt+Tab).
-    #  # - 'park': Moved beyond the edges of all monitors while staying
-    #  #   shown, so they remain in Alt+Tab and the taskbar. Picking one
-    #  #   in Alt+Tab scrolls it into view.
-    #  offscreen_windows: 'hide'
-    # Overrides `general.layout_switch` for this workspace.
-    #layout_switch: 'keep'
-    # Options for the BSP layout (only used when layout is 'bsp').
-    #bsp:
-    #  # How the direction of a new split is chosen:
-    #  # - 'longest_side': Split the longer side of the focused window
-    #  #   (default, like bspwm).
-    #  # - 'alternate': Alternate the split direction with the depth of
-    #  #   the tree.
-    #  automatic_scheme: 'longest_side'
+    # Omit this key to inherit `layout.default` ('scrolling').
+    #layout: 'scrolling'
+    # Overrides the global layout options for this workspace. Only the
+    # given options are overridden; the rest are inherited.
+    #layout_overrides:
+    #  scrolling:
+    #    window_width: 0.5
+    #  bsp:
+    #    automatic_scheme: 'alternate'
+    # Overrides `layout.switch_behavior` for this workspace.
+    #layout_switch: 'reflow'
     # The layout can be switched at runtime, and the strip scrolled along
     # its axis without moving focus:
     #   `set-layout --layout scrolling --workspace 1`

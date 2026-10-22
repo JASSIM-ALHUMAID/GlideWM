@@ -20,6 +20,7 @@ use crate::{
     Workspace,
   },
   traits::TilingSizeGetters,
+  user_config::UserConfig,
   wm_state::WmState,
 };
 
@@ -50,6 +51,31 @@ pub fn mock_window_rect() -> Rect {
 
 pub fn mock_border_delta() -> RectDelta {
   RectDelta::zero()
+}
+
+/// Creates a `UserConfig` from the given YAML config.
+///
+/// The common leading whitespace of the YAML is stripped, so that it can
+/// be written as an indented block.
+#[must_use]
+pub fn mock_user_config(yaml: &str) -> UserConfig {
+  let indent = yaml
+    .lines()
+    .filter(|line| !line.trim().is_empty())
+    .map(|line| line.len() - line.trim_start().len())
+    .min()
+    .unwrap_or(0);
+
+  let yaml = yaml
+    .lines()
+    .map(|line| &line[indent.min(line.len())..])
+    .collect::<Vec<_>>()
+    .join("\n");
+
+  let mut config = UserConfig::mock();
+  config.value = serde_yaml::from_str(&yaml).unwrap();
+
+  config
 }
 
 /// Creates a scrolling workspace with equally-sized tiling windows,
@@ -283,6 +309,9 @@ impl Workspace {
     #[builder(default = GapsConfig::default())] gaps_config: GapsConfig,
     #[builder(default = vec![])] tiling_containers: Vec<TilingContainer>,
     #[builder(default = vec![])] non_tiling_windows: Vec<NonTilingWindow>,
+    // The mock workspace uses the tiling layout, regardless of the
+    // built-in default. Tests that need another layout set it
+    // explicitly, so that they don't depend on the default.
     #[builder(default = WorkspaceLayout::Tiling)] layout: WorkspaceLayout,
     #[builder(default = ScrollConfig::default())] scroll: ScrollConfig,
     #[builder(default = BspConfig::default())] bsp: BspConfig,

@@ -230,6 +230,7 @@ mod tests {
   use crate::{
     commands::container::{attach_container, set_focused_descendant},
     models::{Monitor, TilingWindow, Workspace},
+    test_utils::mock_user_config,
     traits::{PositionGetters, TilingDirectionGetters, TilingSizeGetters},
   };
 
@@ -424,5 +425,110 @@ mod tests {
     for window in [&first, &second] {
       assert!((window.tiling_size() - 0.5).abs() < f32::EPSILON);
     }
+  }
+
+  /// Creates a mock workspace attached to a mock monitor, and a mock
+  /// state that contains the monitor.
+  fn mock_state_with_workspace() -> (Workspace, WmState) {
+    let workspace = Workspace::mock().call();
+
+    let monitor =
+      Monitor::mock().workspaces(vec![workspace.clone()]).call();
+
+    let state = WmState::mock();
+    attach_container(
+      &monitor.clone().into(),
+      &state.root_container.clone().into(),
+      None,
+    )
+    .unwrap();
+
+    (workspace, state)
+  }
+
+  #[test]
+  fn reload_global_default_switches_inherited_workspaces() {
+    let (workspace, mut state) = mock_state_with_workspace();
+
+    // The workspace doesn't set a layout, so it inherits the global
+    // default.
+    let config = mock_user_config(
+      r"
+      layout:
+        default: 'scrolling'
+      workspaces:
+        - name: '1'
+      ",
+    );
+
+    update_workspace_configs(&mut state, &config).unwrap();
+
+    assert_eq!(workspace.layout(), WorkspaceLayout::Scrolling);
+  }
+
+  #[test]
+  fn reload_keeps_explicit_workspace_layout() {
+    let (workspace, mut state) = mock_state_with_workspace();
+
+    // The workspace sets its own layout, so the global default doesn't
+    // apply to it.
+    let config = mock_user_config(
+      r"
+      layout:
+        default: 'scrolling'
+      workspaces:
+        - name: '1'
+          layout: 'tiling'
+      ",
+    );
+
+    update_workspace_configs(&mut state, &config).unwrap();
+
+    assert_eq!(workspace.layout(), WorkspaceLayout::Tiling);
+  }
+
+  #[test]
+  fn reload_global_scrolling_options_apply() {
+    let (workspace, mut state) = mock_state_with_workspace();
+
+    let config = mock_user_config(
+      r"
+      layout:
+        default: 'scrolling'
+        scrolling:
+          axis: 'vertical'
+      workspaces:
+        - name: '1'
+      ",
+    );
+
+    update_workspace_configs(&mut state, &config).unwrap();
+
+    // The scroll axis of the global config is applied as the tiling
+    // direction of the scrolling workspace.
+    assert_eq!(workspace.tiling_direction(), TilingDirection::Vertical);
+  }
+
+  #[test]
+  fn reload_workspace_override_beats_global_scrolling_options() {
+    let (workspace, mut state) = mock_state_with_workspace();
+
+    let config = mock_user_config(
+      r"
+      layout:
+        default: 'scrolling'
+        scrolling:
+          axis: 'vertical'
+      workspaces:
+        - name: '1'
+          layout_overrides:
+            scrolling:
+              axis: 'horizontal'
+      ",
+    );
+
+    update_workspace_configs(&mut state, &config).unwrap();
+
+    assert_eq!(workspace.tiling_direction(), TilingDirection::Horizontal);
   }
 }

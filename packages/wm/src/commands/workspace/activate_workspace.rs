@@ -125,6 +125,7 @@ mod tests {
   use wm_common::{BspConfig, ScrollConfig, WorkspaceLayout};
 
   use super::*;
+  use crate::test_utils::mock_user_config;
 
   /// Creates a mock user config with a single scrolling workspace named
   /// "1".
@@ -170,5 +171,26 @@ mod tests {
       workspace_config(Some("1"), None, &mut state, &config).unwrap();
 
     assert_eq!(found_config.layout, WorkspaceLayout::Tiling);
+  }
+
+  #[test]
+  fn inherits_global_default_layout() {
+    let mut state = WmState::mock();
+
+    // The workspace doesn't set a layout, so it inherits the global
+    // default.
+    let config = mock_user_config(
+      r"
+      layout:
+        default: 'scrolling'
+      workspaces:
+        - name: '1'
+      ",
+    );
+
+    let found_config =
+      workspace_config(Some("1"), None, &mut state, &config).unwrap();
+
+    assert_eq!(found_config.layout, WorkspaceLayout::Scrolling);
   }
 }

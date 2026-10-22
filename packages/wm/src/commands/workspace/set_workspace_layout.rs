@@ -261,4 +261,31 @@ mod tests {
 
     assert!(!state.pending_sync.has_changes());
   }
+
+  #[test]
+  fn runtime_switch_uses_resolved_scroll_options() {
+    let workspace = Workspace::mock().call();
+    let _monitor =
+      Monitor::mock().workspaces(vec![workspace.clone()]).call();
+
+    // The workspace's resolved scroll options are used for the strip
+    // items that are added after the switch.
+    let mut config = workspace.config();
+    config.scroll.window_width = 0.8;
+    workspace.set_config(config);
+
+    let mut state = WmState::mock();
+
+    set_workspace_layout(
+      &workspace,
+      &WorkspaceLayout::Scrolling,
+      LayoutSwitchBehavior::Reflow,
+      &mut state,
+    )
+    .unwrap();
+
+    let size = layouts::default_child_size(&workspace).unwrap();
+
+    assert!((size - 0.8).abs() < f32::EPSILON);
+  }
 }

@@ -392,3 +392,34 @@ impl UserConfig {
     }
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use wm_common::{LayoutSwitchBehavior, ScrollAlign, WorkspaceLayout};
+
+  use super::*;
+
+  /// The sample config must parse without errors, and without using any
+  /// deprecated config options.
+  #[test]
+  fn parses_sample_config() {
+    let config: ParsedConfig =
+      serde_yaml::from_str(SAMPLE_CONFIG).unwrap();
+
+    assert_eq!(config.layout.default, WorkspaceLayout::Scrolling);
+    assert_eq!(
+      config.layout.switch_behavior,
+      Some(LayoutSwitchBehavior::Keep)
+    );
+    assert_eq!(config.layout.scrolling.align, ScrollAlign::Center);
+
+    // The workspaces inherit the global default layout.
+    assert!(config
+      .workspaces
+      .iter()
+      .all(|workspace| workspace.layout == WorkspaceLayout::Scrolling));
+
+    // The deprecated config options aren't used by the sample config.
+    assert_eq!(config.general.layout_switch, None);
+  }
+}
