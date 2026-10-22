@@ -66,7 +66,7 @@ function Build-Binaries() {
     $cargoArgs = @("run", "nightly", "cargo")
   } else {
     $cargoExe = "cargo"
-    $cargoArgs = @("cargo")
+    $cargoArgs = @()
   }
 
   $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
