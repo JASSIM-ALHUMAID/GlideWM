@@ -33,7 +33,7 @@ use super::NativeWindow;
 use crate::{Rect, ThumbnailFrame, ThumbnailId};
 
 /// Class name of the overlay window.
-const OVERLAY_CLASS_NAME: PCWSTR = w!("GlazeWMThumbnailOverlay");
+const OVERLAY_CLASS_NAME: PCWSTR = w!("GlideWMThumbnailOverlay");
 
 /// Implements [`ThumbnailOverlay`](crate::ThumbnailOverlay).
 pub(crate) struct ThumbnailOverlay {

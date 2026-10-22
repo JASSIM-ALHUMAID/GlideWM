@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2021"
 
 [[bin]]
-name = "glazewm-watcher"
+name = "glidewm-watcher"
 path = "src/main.rs"
 
 [build-dependencies]

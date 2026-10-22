@@ -11,13 +11,13 @@ use crate::{TilingDirection, WorkspaceLayout};
 const VERSION: &str = env!("VERSION_NUMBER");
 
 #[derive(Clone, Debug, Parser)]
-#[clap(name = "glazewm", author, version = VERSION, about, long_about = None)]
+#[clap(name = "glidewm", author, version = VERSION, about, long_about = None)]
 pub enum AppCommand {
   /// Starts the window manager.
   Start {
     /// Custom path to user config file.
     ///
-    /// The default path is `%userprofile%/.glzr/glazewm/config.yaml`
+    /// The default path is `%userprofile%/.glidewm/config.yaml`
     #[clap(short = 'c', long = "config", value_hint = clap::ValueHint::FilePath)]
     config_path: Option<PathBuf>,
 

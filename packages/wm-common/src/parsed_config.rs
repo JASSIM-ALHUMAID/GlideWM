@@ -313,7 +313,7 @@ impl Default for GeneralConfig {
 /// Animations are disabled by default, and require the `cloak` hide
 /// method: windows are animated via live compositor thumbnails while the
 /// real windows are cloaked. Window minimize/restore/close animations
-/// aren't handled by `GlazeWM` — use a tool such as Windhawk for those.
+/// aren't handled by `GlideWM` — use a tool such as Windhawk for those.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct AnimationsConfig {

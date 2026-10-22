@@ -58,9 +58,9 @@ fn main() {
   // Set language to English (US).
   res.set_language(0x0409);
 
-  res.set("OriginalFilename", "glazewm.exe");
-  res.set("ProductName", "GlazeWM");
-  res.set("FileDescription", "GlazeWM");
+  res.set("OriginalFilename", "glidewm.exe");
+  res.set("ProductName", "GlideWM");
+  res.set("FileDescription", "GlideWM");
 
   let version_parts = env!("VERSION_NUMBER")
     .split('.')

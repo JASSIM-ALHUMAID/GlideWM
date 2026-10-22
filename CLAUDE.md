@@ -1,14 +1,14 @@
 <project_overview>
-GlazeWM is a window manager for macOS and Windows, written in Rust.
+GlideWM is a window manager for macOS and Windows, written in Rust.
 
 Crate structure:
 
-- **wm** (bin): Main application, which implements the core window management logic. Install path on Windows: `C:\Program Files\glzr.io\glazewm.exe`
-- **wm-cli** (bin, lib): CLI for interacting with the main application. Added to `$PATH` by default. Install path on Windows: `C:\Program Files\glzr.io\cli\glazewm.exe`
+- **wm** (bin): Main application, which implements the core window management logic. Install path on Windows: `C:\Program Files\GlideWM\glidewm.exe`
+- **wm-cli** (bin, lib): CLI for interacting with the main application. Added to `$PATH` by default. Install path on Windows: `C:\Program Files\GlideWM\cli\glidewm.exe`
 - **wm-common** (lib): Shared types, utilities, and constants used across other crates.
 - **wm-ipc-client** (lib): WebSocket client library for IPC with the main application.
 - **wm-platform** (lib): Wrappers over platform-specific APIs; other crates do not call Windows/macOS APIs directly.
-- **wm-watcher** (Windows-only) (bin): Watchdog process ensuring proper cleanup when the main application exits. Install path on Windows: `C:\Program Files\glzr.io\glazewm-watcher.exe`
+- **wm-watcher** (Windows-only) (bin): Watchdog process ensuring proper cleanup when the main application exits. Install path on Windows: `C:\Program Files\GlideWM\glidewm-watcher.exe`
 
 </project_overview>
 

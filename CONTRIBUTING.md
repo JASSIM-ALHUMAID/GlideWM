@@ -50,17 +50,17 @@ Knowledge of the entire codebase should never be required to make changes. The f
 
 ### Crates
 
-GlazeWM is organized into several Rust crates:
+GlideWM is organized into several Rust crates:
 
 - `wm` (bin): Main application, which implements the core window management logic.
-  - Gets installed to `C:\Program Files\glzr.io\glazewm.exe`.
+  - Gets installed to `C:\Program Files\GlideWM\glidewm.exe`.
 - `wm-cli` (bin/lib): CLI for interacting with the main application.
-  - Gets installed to `C:\Program Files\glzr.io\cli\glazewm.exe`. This is added to `$PATH` by default.
+  - Gets installed to `C:\Program Files\GlideWM\cli\glidewm.exe`. This is added to `$PATH` by default.
 - `wm-common` (lib): Shared types, utilities, and constants used across other crates.
 - `wm-ipc-client` (lib): WebSocket client library for IPC with the main application.
 - `wm-platform` (lib): Wrappers over platform-specific API's - other crates don't interact directly with the Windows and macOS API's.
 - `wm-watcher` (bin): Watchdog process that ensures proper cleanup when the main application exits.
-  - Gets installed to `C:\Program Files\glzr.io\glazewm-watcher.exe`.
+  - Gets installed to `C:\Program Files\GlideWM\glidewm-watcher.exe`.
 
 ### Commands & events
 
