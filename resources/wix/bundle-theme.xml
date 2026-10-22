@@ -54,7 +54,7 @@
         VisibleCondition="WixStdBAShowVersion"
       >#(loc.InstallVersion)</Label>
       <Checkbox
-        Name="Custom_InstallGlazeWM"
+        Name="Custom_InstallGlideWM"
         X="185"
         Y="180"
         Width="-11"
@@ -62,14 +62,14 @@
         TabStop="yes"
         FontId="6"
         EnableCondition="0=1"
-      >#(loc.CustomInstallGlazeWM)</Checkbox>
+      >#(loc.CustomInstallGlideWM)</Checkbox>
       <Hypertext
         X="204"
         Y="200"
         Width="-11"
         Height="20"
         FontId="3"
-      >#(loc.CustomInstallGlazeWMHint)</Hypertext>
+      >#(loc.CustomInstallGlideWMHint)</Hypertext>
       <Checkbox
         Name="Custom_InstallZebar"
         X="185"

@@ -1,6 +1,6 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package
-    Name="GlazeWM"
+    Name="GlideWM"
     Version="$(var.VERSION_NUMBER)"
     UpgradeCode="ef0f849b-d90d-4647-bb26-730c6fce5f9e"
     Manufacturer="Glzr Software Pte. Ltd."
@@ -41,11 +41,11 @@
 
     <StandardDirectory Id="ProgramFiles6432Folder">
       <Directory Id="Custom_OrgDir" Name="glzr.io">
-        <Directory Id="INSTALLFOLDER" Name="GlazeWM">
+        <Directory Id="INSTALLFOLDER" Name="GlideWM">
           <Component Id="Custom_CreateInstallDir">
             <RegistryValue
               Root="HKLM"
-              Key="SOFTWARE\glzr.io\GlazeWM"
+              Key="SOFTWARE\glzr.io\GlideWM"
               Name="InstallDir"
               Value="[INSTALLFOLDER]"
               Type="string"
@@ -55,14 +55,14 @@
 
           <!-- Add main + watcher executable. -->
           <Component Id="Custom_InstallRootFiles" Guid="73752F94-6589-4C7B-ABED-39D655A19714">
-            <File Id="Custom_RootExe" Source="$(var.EXE_DIR)/glazewm.exe" KeyPath="yes" />
-            <File Id="Custom_RootWatcherExe" Source="$(var.EXE_DIR)/glazewm-watcher.exe" />
+            <File Id="Custom_RootExe" Source="$(var.EXE_DIR)/glidewm.exe" KeyPath="yes" />
+            <File Id="Custom_RootWatcherExe" Source="$(var.EXE_DIR)/glidewm-watcher.exe" />
           </Component>
 
           <!-- Add CLI executable. -->
           <Directory Id="Custom_CliDir" Name="cli">
             <Component Id="Custom_InstallCliFiles" Guid="916284d8-100c-4f37-8d8c-2722b01cb3dd">
-              <File Id="Custom_CliExe" Source="$(var.EXE_DIR)/glazewm-cli.exe" Name="glazewm.exe" KeyPath="yes" />
+              <File Id="Custom_CliExe" Source="$(var.EXE_DIR)/glidewm-cli.exe" Name="glidewm.exe" KeyPath="yes" />
             </Component>
           </Directory>
         </Directory>
@@ -74,14 +74,14 @@
       <Component Id="Custom_AddDesktopShortcut" Condition="ENABLE_DESKTOP_SHORTCUT = 1">
         <Shortcut
           Id="Custom_DesktopShortcut"
-          Name="GlazeWM"
-          Description="Launch GlazeWM"
-          Target="[INSTALLFOLDER]glazewm.exe"
+          Name="GlideWM"
+          Description="Launch GlideWM"
+          Target="[INSTALLFOLDER]glidewm.exe"
         />
 
         <RegistryValue
           Root="HKLM"
-          Key="SOFTWARE\glzr.io\GlazeWM"
+          Key="SOFTWARE\glzr.io\GlideWM"
           Name="DesktopShortcutInstalled"
           Type="integer"
           Value="1"
@@ -95,14 +95,14 @@
       <Component Id="Custom_AddStartMenuShortcut" Condition="ENABLE_START_MENU_SHORTCUT = 1">
         <Shortcut
           Id="Custom_StartMenuShortcut"
-          Name="GlazeWM"
-          Description="Launch GlazeWM"
-          Target="[INSTALLFOLDER]glazewm.exe"
+          Name="GlideWM"
+          Description="Launch GlideWM"
+          Target="[INSTALLFOLDER]glidewm.exe"
         />
 
         <RegistryValue
           Root="HKLM"
-          Key="SOFTWARE\glzr.io\GlazeWM"
+          Key="SOFTWARE\glzr.io\GlideWM"
           Name="StartMenuShortcutInstalled"
           Type="integer"
           Value="1"
@@ -129,7 +129,7 @@
       <!-- `RegistryValue` with `KeyPath="yes"` is needed for component state tracking. -->
       <RegistryValue
         Root="HKLM"
-        Key="SOFTWARE\glzr.io\GlazeWM"
+        Key="SOFTWARE\glzr.io\GlideWM"
         Name="AutoLaunchCleanup"
         Type="integer"
         Value="1"
@@ -138,11 +138,11 @@
       <RemoveRegistryValue
         Root="HKCU"
         Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
-        Name="GlazeWM" />
+        Name="GlideWM" />
       <RemoveRegistryValue
         Root="HKCU"
         Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
-        Name="GlazeWM" />
+        Name="GlideWM" />
     </Component>
   </Package>
 </Wix>

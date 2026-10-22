@@ -81,7 +81,7 @@ function BuildExes() {
     $outDir = if ($target -eq "x86_64-pc-windows-msvc") { "out/x64" } else { "out/arm64" }
     $sourceDir = "target/$target/release"
 
-    $requiredExes = @("glazewm.exe", "glazewm-cli.exe", "glazewm-watcher.exe")
+    $requiredExes = @("glidewm.exe", "glidewm-cli.exe", "glidewm-watcher.exe")
     $sourcePaths = $requiredExes | ForEach-Object { "$sourceDir/$_" }
 
     # Build for the target if the executables do not exist.
