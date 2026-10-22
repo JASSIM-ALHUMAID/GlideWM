@@ -42,7 +42,7 @@ pub fn platform_sync(
   // Detect switches of the displayed workspace before redrawing, so
   // that windows can be animated accordingly.
   let monitors = state.monitors();
-  let switches = state.animations.detect_switches(&monitors);
+  let switches = state.animations.detect_switches(&monitors, config);
 
   if !state.pending_sync.containers_to_redraw().is_empty()
     || !state.pending_sync.workspaces_to_reorder().is_empty()

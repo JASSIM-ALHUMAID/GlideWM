@@ -20,49 +20,79 @@ pub enum SlideEdge {
   Bottom,
 }
 
+/// Direction of a workspace switch in the monitor's workspace order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwitchDirection {
+  /// The switch moved towards the end of the workspace order.
+  Forward,
+
+  /// The switch moved towards the start of the workspace order.
+  Backward,
+
+  /// The direction can't be determined, e.g. because the workspace that
+  /// was displayed no longer exists and its config entry is unknown.
+  Unknown,
+}
+
+impl SwitchDirection {
+  /// Resolves a direction from the positions of the leaving and entering
+  /// workspaces in the same ordered list.
+  ///
+  /// Returns [`SwitchDirection::Unknown`] if both positions are equal,
+  /// which means that the endpoints can't be distinguished.
+  #[must_use]
+  pub fn from_positions(from: usize, to: usize) -> Self {
+    match from.cmp(&to) {
+      std::cmp::Ordering::Less => Self::Forward,
+      std::cmp::Ordering::Greater => Self::Backward,
+      std::cmp::Ordering::Equal => Self::Unknown,
+    }
+  }
+}
+
 impl SlideEdge {
   /// Resolves the edge that the incoming workspace slides in from for
   /// the given animation style and configured direction.
   ///
-  /// `is_forward` is whether the switch moved forward in the monitor's
-  /// workspace order (e.g. focused the next workspace).
+  /// `switch_direction` is the direction of the switch in the monitor's
+  /// workspace order (e.g. focusing the next workspace is a forward
+  /// switch). Returns `None` if the style derives its edge from the
+  /// switch direction and the direction is unknown.
   #[must_use]
   pub fn for_switch(
     style: WorkspaceSwitchAnimationStyle,
     direction: AnimationDirection,
-    is_forward: bool,
-  ) -> Self {
+    switch_direction: SwitchDirection,
+  ) -> Option<Self> {
+    // Edge derived from the switch direction. The incoming workspace
+    // comes in from the edge it travels from, so a forward switch slides
+    // the windows towards the end of the order.
+    let auto_edge = |forward: Self, backward: Self| match switch_direction
+    {
+      SwitchDirection::Forward => Some(forward),
+      SwitchDirection::Backward => Some(backward),
+      SwitchDirection::Unknown => None,
+    };
+
     // The vertical style (`slide_vert`) slides along the y-axis and the
     // other styles along the x-axis. Directions that don't match the
     // style's axis are treated as `auto`.
     match style {
       WorkspaceSwitchAnimationStyle::SlideVert => match direction {
-        AnimationDirection::Up => Self::Bottom,
-        AnimationDirection::Down => Self::Top,
+        AnimationDirection::Up => Some(Self::Bottom),
+        AnimationDirection::Down => Some(Self::Top),
         AnimationDirection::Auto
         | AnimationDirection::Left
-        | AnimationDirection::Right => {
-          if is_forward {
-            Self::Bottom
-          } else {
-            Self::Top
-          }
-        }
+        | AnimationDirection::Right => auto_edge(Self::Bottom, Self::Top),
       },
       WorkspaceSwitchAnimationStyle::Slide
       | WorkspaceSwitchAnimationStyle::Fade
       | WorkspaceSwitchAnimationStyle::None => match direction {
-        AnimationDirection::Left => Self::Left,
-        AnimationDirection::Right => Self::Right,
+        AnimationDirection::Left => Some(Self::Left),
+        AnimationDirection::Right => Some(Self::Right),
         AnimationDirection::Auto
         | AnimationDirection::Up
-        | AnimationDirection::Down => {
-          if is_forward {
-            Self::Right
-          } else {
-            Self::Left
-          }
-        }
+        | AnimationDirection::Down => auto_edge(Self::Right, Self::Left),
       },
     }
   }
@@ -221,39 +251,93 @@ mod tests {
   #[test]
   fn resolves_switch_edges() {
     use AnimationDirection as D;
+    use SwitchDirection as W;
     use WorkspaceSwitchAnimationStyle as S;
 
     assert_eq!(
-      SlideEdge::for_switch(S::Slide, D::Auto, true),
-      SlideEdge::Right
+      SlideEdge::for_switch(S::Slide, D::Auto, W::Forward),
+      Some(SlideEdge::Right)
     );
     assert_eq!(
-      SlideEdge::for_switch(S::Slide, D::Auto, false),
-      SlideEdge::Left
+      SlideEdge::for_switch(S::Slide, D::Auto, W::Backward),
+      Some(SlideEdge::Left)
     );
     assert_eq!(
-      SlideEdge::for_switch(S::Slide, D::Left, true),
-      SlideEdge::Left
+      SlideEdge::for_switch(S::Slide, D::Left, W::Forward),
+      Some(SlideEdge::Left)
     );
     // Directions that don't match the style's axis fall back to `auto`.
     assert_eq!(
-      SlideEdge::for_switch(S::Slide, D::Up, false),
-      SlideEdge::Left
+      SlideEdge::for_switch(S::Slide, D::Up, W::Backward),
+      Some(SlideEdge::Left)
     );
     assert_eq!(
-      SlideEdge::for_switch(S::SlideVert, D::Auto, true),
-      SlideEdge::Bottom
+      SlideEdge::for_switch(S::SlideVert, D::Auto, W::Forward),
+      Some(SlideEdge::Bottom)
     );
     assert_eq!(
-      SlideEdge::for_switch(S::SlideVert, D::Down, true),
-      SlideEdge::Top
+      SlideEdge::for_switch(S::SlideVert, D::Auto, W::Backward),
+      Some(SlideEdge::Top)
     );
     assert_eq!(
-      SlideEdge::for_switch(S::SlideVert, D::Right, false),
-      SlideEdge::Top
+      SlideEdge::for_switch(S::SlideVert, D::Down, W::Forward),
+      Some(SlideEdge::Top)
+    );
+    assert_eq!(
+      SlideEdge::for_switch(S::SlideVert, D::Right, W::Backward),
+      Some(SlideEdge::Top)
     );
     assert_eq!(SlideEdge::Right.opposite(), SlideEdge::Left);
     assert_eq!(SlideEdge::Top.opposite(), SlideEdge::Bottom);
+  }
+
+  #[test]
+  fn leaves_auto_edge_undefined_without_a_direction() {
+    use AnimationDirection as D;
+    use WorkspaceSwitchAnimationStyle as S;
+
+    assert_eq!(
+      SlideEdge::for_switch(S::Slide, D::Auto, SwitchDirection::Unknown),
+      None
+    );
+    assert_eq!(
+      SlideEdge::for_switch(
+        S::SlideVert,
+        D::Auto,
+        SwitchDirection::Unknown
+      ),
+      None
+    );
+
+    // A fixed direction doesn't depend on the switch direction.
+    assert_eq!(
+      SlideEdge::for_switch(S::Slide, D::Left, SwitchDirection::Unknown),
+      Some(SlideEdge::Left)
+    );
+    assert_eq!(
+      SlideEdge::for_switch(
+        S::SlideVert,
+        D::Down,
+        SwitchDirection::Unknown
+      ),
+      Some(SlideEdge::Top)
+    );
+  }
+
+  #[test]
+  fn resolves_switch_directions_from_positions() {
+    assert_eq!(
+      SwitchDirection::from_positions(0, 1),
+      SwitchDirection::Forward
+    );
+    assert_eq!(
+      SwitchDirection::from_positions(2, 0),
+      SwitchDirection::Backward
+    );
+    assert_eq!(
+      SwitchDirection::from_positions(1, 1),
+      SwitchDirection::Unknown
+    );
   }
 
   #[test]

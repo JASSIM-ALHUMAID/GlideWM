@@ -34,13 +34,14 @@ use wm_common::{
 use wm_platform::{Rect, WindowId, WindowZOrder};
 
 use self::{
+  geometry::SwitchDirection,
   planner::{PlanInput, Start, SwitchRole, Target, Visibility},
   timeline::{Frame, Timing},
   worker::{BeginRequest, StartFrame, WorkerCommand},
 };
 use crate::{
   layouts::WindowPlacement,
-  models::{Monitor, WindowContainer},
+  models::{Monitor, WindowContainer, Workspace},
   traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
 };
@@ -54,8 +55,26 @@ pub struct WorkspaceSwitch {
   /// ID of the workspace that's now displayed.
   to: Uuid,
 
-  /// Whether the switch moved forward in the monitor's workspace order.
-  is_forward: bool,
+  /// Direction of the switch in the monitor's workspace order.
+  direction: SwitchDirection,
+}
+
+/// The displayed workspace of a monitor as of a sync pass.
+///
+/// Kept between passes so that a switch can be resolved after the
+/// workspace that was displayed is gone (e.g. an empty workspace that
+/// `focus_workspace` destroys before the sync pass runs).
+#[derive(Clone, Debug)]
+struct DisplayedWorkspace {
+  /// ID of the displayed workspace.
+  id: Uuid,
+
+  /// Config name of the displayed workspace (`WorkspaceConfig::name`,
+  /// not its display name).
+  config_name: String,
+
+  /// Order of the monitor's workspaces as of the sync pass.
+  order: Vec<Uuid>,
 }
 
 /// Update emitted by the animation worker for the main thread to apply
@@ -209,7 +228,7 @@ pub struct Animations {
 
   /// The displayed workspace of each monitor as of the last sync pass.
   /// Used to detect workspace switches.
-  displayed_workspaces: HashMap<Uuid, Uuid>,
+  displayed_workspaces: HashMap<Uuid, DisplayedWorkspace>,
 
   /// Whether the current sync pass is the first one. Windows that exist
   /// when the WM starts are tiled without animating them.
@@ -351,9 +370,14 @@ impl Animations {
   ///
   /// Must be called on every sync pass before windows are redrawn. The
   /// first pass for a monitor (e.g. at startup) reports no switch.
+  ///
+  /// `config` provides the workspace order that switch directions are
+  /// resolved against when the workspace that was displayed no longer
+  /// exists (e.g. an empty workspace that was destroyed before the pass).
   pub fn detect_switches(
     &mut self,
     monitors: &[Monitor],
+    config: &UserConfig,
   ) -> HashMap<Uuid, WorkspaceSwitch> {
     self.is_initial_pass = self.displayed_workspaces.is_empty();
     self.sync_pass += 1;
@@ -365,44 +389,56 @@ impl Animations {
         continue;
       };
 
-      let workspace_id = workspace.id();
+      let config_name = workspace.config().name;
 
-      let previous_id =
-        self.displayed_workspaces.insert(monitor.id(), workspace_id);
-
-      let Some(previous_id) = previous_id.filter(|id| *id != workspace_id)
-      else {
-        continue;
-      };
-
-      // Determine whether the switch moved forward in the monitor's
-      // workspace order, so that the slide direction can follow it.
-      let workspace_ids = monitor
+      let order = monitor
         .children()
         .iter()
         .map(CommonGetters::id)
         .collect::<Vec<_>>();
 
-      let is_forward = match (
-        workspace_ids.iter().position(|id| *id == previous_id),
-        workspace_ids.iter().position(|id| *id == workspace_id),
-      ) {
-        (Some(from_index), Some(to_index)) => to_index > from_index,
-        // The direction can't be determined if either workspace is no
-        // longer in the monitor's workspace list (e.g. it was removed
-        // from the config). Default to a forward switch.
-        _ => true,
+      let previous = self.displayed_workspaces.insert(
+        monitor.id(),
+        DisplayedWorkspace {
+          id: workspace.id(),
+          config_name: config_name.clone(),
+          order: order.clone(),
+        },
+      );
+
+      let Some(previous) =
+        previous.filter(|previous| previous.id != workspace.id())
+      else {
+        continue;
       };
+
+      let direction =
+        switch_direction(config, &workspace, &order, &previous);
+
+      if direction == SwitchDirection::Unknown {
+        tracing::debug!(
+          "Unknown direction for workspace switch on monitor {} \
+           ({} -> {}); skipping automatic slide.",
+          monitor.id(),
+          previous.config_name,
+          config_name
+        );
+      }
 
       switches.insert(
         monitor.id(),
         WorkspaceSwitch {
-          from: previous_id,
-          to: workspace_id,
-          is_forward,
+          from: previous.id,
+          to: workspace.id(),
+          direction,
         },
       );
     }
+
+    // Drop snapshots of monitors that are no longer attached.
+    self.displayed_workspaces.retain(|monitor_id, _| {
+      monitors.iter().any(|monitor| monitor.id() == *monitor_id)
+    });
 
     switches
   }
@@ -523,11 +559,11 @@ impl Animations {
       input.switches.get(&monitor.id()).and_then(|switch| {
         if workspace.id() == switch.to {
           Some(SwitchRole::Entering {
-            is_forward: switch.is_forward,
+            direction: switch.direction,
           })
         } else if workspace.id() == switch.from {
           Some(SwitchRole::Leaving {
-            is_forward: switch.is_forward,
+            direction: switch.direction,
           })
         } else {
           None
@@ -979,6 +1015,60 @@ impl Drop for Animations {
   }
 }
 
+/// Resolves the direction of a workspace switch from the first ordering
+/// that contains both the leaving and the entering workspace.
+///
+/// Each source compares positions inside a single ordering. Mixing a
+/// position from an old ordering with one from a new ordering would be
+/// invalid, so the sources are tried in order of authority:
+///
+/// 1. The monitor's current workspace order. This is what the user sees
+///    and is authoritative while both workspaces are still active.
+/// 2. The order of the user's config, which survives an empty leaving
+///    workspace being destroyed. Both endpoints are resolved against the
+///    same config, so config reloads cannot mix orderings.
+/// 3. The order snapshot from before the switch, which still contains
+///    workspaces that were renamed or removed from the config at runtime.
+///
+/// Returns [`SwitchDirection::Unknown`] if no ordering contains both
+/// workspaces.
+fn switch_direction(
+  config: &UserConfig,
+  current: &Workspace,
+  current_order: &[Uuid],
+  previous: &DisplayedWorkspace,
+) -> SwitchDirection {
+  let current_id = current.id();
+
+  if let (Some(from), Some(to)) = (
+    order_position(current_order, previous.id),
+    order_position(current_order, current_id),
+  ) {
+    return SwitchDirection::from_positions(from, to);
+  }
+
+  if let (Some(from), Some(to)) = (
+    config.workspace_config_index(&previous.config_name),
+    config.workspace_config_index(&current.config().name),
+  ) {
+    return SwitchDirection::from_positions(from, to);
+  }
+
+  if let (Some(from), Some(to)) = (
+    order_position(&previous.order, previous.id),
+    order_position(&previous.order, current_id),
+  ) {
+    return SwitchDirection::from_positions(from, to);
+  }
+
+  SwitchDirection::Unknown
+}
+
+/// Position of a workspace in an ordered list of workspace IDs.
+fn order_position(order: &[Uuid], workspace_id: Uuid) -> Option<usize> {
+  order.iter().position(|id| *id == workspace_id)
+}
+
 /// Current frame of a window, in the coordinates that windows are
 /// positioned in (i.e. including the window's invisible borders).
 ///
@@ -1034,9 +1124,18 @@ fn set_cloaked(_handle: WindowId, _cloaked: bool) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+  use wm_common::{
+    BspConfig, ScrollConfig, WorkspaceConfig, WorkspaceLayout,
+  };
+
   use super::*;
   use crate::{
-    commands::container::attach_container,
+    commands::{
+      container::{
+        attach_container, detach_container, set_focused_descendant,
+      },
+      workspace::sort_workspaces,
+    },
     models::{TilingWindow, Workspace},
     test_utils::mock_window_rect,
   };
@@ -1060,6 +1159,47 @@ mod tests {
     config
   }
 
+  /// Creates a workspace config with the given name.
+  fn workspace_config(name: &str) -> WorkspaceConfig {
+    WorkspaceConfig {
+      name: name.to_string(),
+      display_name: None,
+      bind_to_monitor: None,
+      keep_alive: false,
+      layout: WorkspaceLayout::Tiling,
+      scroll: ScrollConfig::default(),
+      bsp: BspConfig::default(),
+      layout_switch: None,
+    }
+  }
+
+  /// Creates a user config whose workspace order matches `names`.
+  fn switch_config(names: &[&str]) -> UserConfig {
+    let mut config = config();
+    config.value.workspaces =
+      names.iter().map(|name| workspace_config(name)).collect();
+    config
+  }
+
+  /// Creates workspaces with the given config names.
+  fn workspaces(names: &[&str]) -> Vec<Workspace> {
+    names
+      .iter()
+      .map(|name| Workspace::mock().name((*name).to_string()).call())
+      .collect()
+  }
+
+  /// Detects switches and returns the switch for the given monitor.
+  fn detect_switch(
+    animations: &mut Animations,
+    monitor: &Monitor,
+    config: &UserConfig,
+  ) -> Option<WorkspaceSwitch> {
+    animations
+      .detect_switches(std::slice::from_ref(monitor), config)
+      .remove(&monitor.id())
+  }
+
   /// A shown tiling window on the displayed workspace of a monitor, with
   /// the initial sync pass already done.
   fn window(animations: &mut Animations) -> WindowContainer {
@@ -1075,8 +1215,8 @@ mod tests {
 
     let monitor = Monitor::mock().workspaces(vec![workspace]).call();
 
-    animations.detect_switches(std::slice::from_ref(&monitor));
-    animations.detect_switches(&[monitor]);
+    animations.detect_switches(std::slice::from_ref(&monitor), &config());
+    animations.detect_switches(&[monitor], &config());
 
     window.into()
   }
@@ -1150,7 +1290,7 @@ mod tests {
     .unwrap();
     let monitor = Monitor::mock().workspaces(vec![workspace]).call();
 
-    animations.detect_switches(&[monitor]);
+    animations.detect_switches(&[monitor], &config());
 
     assert_eq!(
       redraw(&mut animations, &window.into(), moved_rect(), &config()),
@@ -1435,5 +1575,229 @@ mod tests {
       commands(&mut worker_rx).as_slice(),
       [WorkerCommand::Cancel { .. }]
     ));
+  }
+
+  #[test]
+  fn resolves_backward_switch_after_empty_workspace_was_destroyed() {
+    let config = switch_config(&["1", "2", "3", "4"]);
+    let workspaces = workspaces(&["1", "2", "3", "4"]);
+    let monitor = Monitor::mock().workspaces(workspaces.clone()).call();
+
+    let (mut animations, _) = animations();
+
+    // Display the empty workspace 3.
+    set_focused_descendant(&workspaces[2].clone().into(), None);
+    assert!(detect_switch(&mut animations, &monitor, &config).is_none());
+
+    // Focus workspace 2 and destroy the empty workspace 3, as
+    // `focus_workspace` does before the sync pass.
+    set_focused_descendant(&workspaces[1].clone().into(), None);
+    detach_container(workspaces[2].clone().into()).unwrap();
+    sort_workspaces(&monitor, &config).unwrap();
+
+    let switch =
+      detect_switch(&mut animations, &monitor, &config).unwrap();
+
+    assert_eq!(switch.from, workspaces[2].id());
+    assert_eq!(switch.to, workspaces[1].id());
+    assert_eq!(switch.direction, SwitchDirection::Backward);
+  }
+
+  #[test]
+  fn resolves_forward_switch_after_empty_workspace_was_destroyed() {
+    let config = switch_config(&["1", "2", "3", "4"]);
+    let workspaces = workspaces(&["1", "2", "3", "4"]);
+    let monitor = Monitor::mock().workspaces(workspaces.clone()).call();
+
+    let (mut animations, _) = animations();
+
+    // Display the empty workspace 1.
+    set_focused_descendant(&workspaces[0].clone().into(), None);
+    assert!(detect_switch(&mut animations, &monitor, &config).is_none());
+
+    // Focus workspace 2 and destroy the empty workspace 1.
+    set_focused_descendant(&workspaces[1].clone().into(), None);
+    detach_container(workspaces[0].clone().into()).unwrap();
+    sort_workspaces(&monitor, &config).unwrap();
+
+    let switch =
+      detect_switch(&mut animations, &monitor, &config).unwrap();
+
+    assert_eq!(switch.direction, SwitchDirection::Forward);
+  }
+
+  #[test]
+  fn resolves_direction_against_one_config_after_reorder() {
+    // Old config: [1, 2, 3, 4]. Displayed workspace 3 had index 2.
+    let old_config = switch_config(&["1", "2", "3", "4"]);
+    let workspaces = workspaces(&["3", "4"]);
+    let monitor = Monitor::mock().workspaces(workspaces.clone()).call();
+
+    let (mut animations, _) = animations();
+
+    set_focused_descendant(&workspaces[0].clone().into(), None);
+    assert!(
+      detect_switch(&mut animations, &monitor, &old_config).is_none()
+    );
+
+    // New config: [3, 4]. Workspace 4 now has index 1; workspace 3 has
+    // index 0. An old cached index (2) must not be compared with the new
+    // index (1).
+    let new_config = switch_config(&["3", "4"]);
+
+    set_focused_descendant(&workspaces[1].clone().into(), None);
+    detach_container(workspaces[0].clone().into()).unwrap();
+    sort_workspaces(&monitor, &new_config).unwrap();
+
+    let switch = detect_switch(&mut animations, &monitor, &new_config)
+      .expect("switch to workspace 4");
+
+    assert_eq!(switch.direction, SwitchDirection::Forward);
+  }
+
+  #[test]
+  fn resolves_direction_from_previous_order_after_runtime_rename() {
+    // Workspace "3" was renamed to "3-work", which isn't in the config
+    // file. The order snapshot from before the switch is the last
+    // consistent source.
+    let config = switch_config(&["1", "2", "3"]);
+    let workspaces = workspaces(&["2", "3-work"]);
+    let monitor = Monitor::mock().workspaces(workspaces.clone()).call();
+
+    let (mut animations, _) = animations();
+
+    set_focused_descendant(&workspaces[1].clone().into(), None);
+    assert!(detect_switch(&mut animations, &monitor, &config).is_none());
+
+    set_focused_descendant(&workspaces[0].clone().into(), None);
+    detach_container(workspaces[1].clone().into()).unwrap();
+    sort_workspaces(&monitor, &config).unwrap();
+
+    let switch = detect_switch(&mut animations, &monitor, &config)
+      .expect("switch to workspace 2");
+
+    assert_eq!(switch.direction, SwitchDirection::Backward);
+  }
+
+  #[test]
+  fn reports_unknown_direction_when_no_ordering_has_both_workspaces() {
+    // Neither workspace's name exists in the config, and the entering
+    // workspace wasn't attached when the leaving one was displayed.
+    let config = switch_config(&["1"]);
+    let previous =
+      Workspace::mock().name("old-renamed".to_string()).call();
+    let monitor =
+      Monitor::mock().workspaces(vec![previous.clone()]).call();
+
+    let (mut animations, _) = animations();
+
+    set_focused_descendant(&previous.clone().into(), None);
+    assert!(detect_switch(&mut animations, &monitor, &config).is_none());
+
+    let current = Workspace::mock().name("new-renamed".to_string()).call();
+
+    attach_container(
+      &current.clone().into(),
+      &monitor.clone().into(),
+      None,
+    )
+    .unwrap();
+
+    set_focused_descendant(&current.clone().into(), None);
+    detach_container(previous.clone().into()).unwrap();
+    sort_workspaces(&monitor, &config).unwrap();
+
+    let switch = detect_switch(&mut animations, &monitor, &config)
+      .expect("switch to the new workspace");
+
+    assert_eq!(switch.direction, SwitchDirection::Unknown);
+  }
+
+  #[test]
+  fn resolves_direction_while_both_workspaces_remain_active() {
+    // A `keep_alive` workspace isn't destroyed. The live order contains
+    // both workspaces, so it's used directly.
+    let mut config = switch_config(&["1", "2", "3"]);
+    config.value.workspaces[2].keep_alive = true;
+
+    let workspaces = workspaces(&["1", "2", "3"]);
+    let monitor = Monitor::mock().workspaces(workspaces.clone()).call();
+
+    let (mut animations, _) = animations();
+
+    set_focused_descendant(&workspaces[2].clone().into(), None);
+    assert!(detect_switch(&mut animations, &monitor, &config).is_none());
+
+    set_focused_descendant(&workspaces[1].clone().into(), None);
+    sort_workspaces(&monitor, &config).unwrap();
+
+    let switch = detect_switch(&mut animations, &monitor, &config)
+      .expect("switch to workspace 2");
+
+    assert_eq!(switch.direction, SwitchDirection::Backward);
+  }
+
+  #[test]
+  fn ignores_switches_to_the_same_workspace() {
+    let config = switch_config(&["1", "2"]);
+    let workspaces = workspaces(&["1", "2"]);
+    let monitor = Monitor::mock().workspaces(workspaces.clone()).call();
+
+    let (mut animations, _) = animations();
+
+    set_focused_descendant(&workspaces[1].clone().into(), None);
+    assert!(detect_switch(&mut animations, &monitor, &config).is_none());
+    assert!(detect_switch(&mut animations, &monitor, &config).is_none());
+  }
+
+  #[test]
+  fn detects_switches_per_monitor() {
+    let config = switch_config(&["1", "2", "3", "4"]);
+
+    let first_workspaces = workspaces(&["1", "2"]);
+    let second_workspaces = workspaces(&["3", "4"]);
+
+    let first_monitor =
+      Monitor::mock().workspaces(first_workspaces.clone()).call();
+    let second_monitor =
+      Monitor::mock().workspaces(second_workspaces.clone()).call();
+
+    let (mut animations, _) = animations();
+
+    set_focused_descendant(&first_workspaces[1].clone().into(), None);
+    set_focused_descendant(&second_workspaces[1].clone().into(), None);
+
+    let monitors = [first_monitor.clone(), second_monitor.clone()];
+
+    assert!(animations.detect_switches(&monitors, &config).is_empty());
+
+    // Switch only the first monitor backward.
+    set_focused_descendant(&first_workspaces[0].clone().into(), None);
+    sort_workspaces(&first_monitor, &config).unwrap();
+
+    let switches = animations.detect_switches(&monitors, &config);
+
+    assert_eq!(switches.len(), 1);
+
+    let switch = switches.get(&first_monitor.id()).unwrap();
+    assert_eq!(switch.direction, SwitchDirection::Backward);
+  }
+
+  #[test]
+  fn forgets_snapshots_of_detached_monitors() {
+    let config = switch_config(&["1", "2"]);
+    let workspaces = workspaces(&["1", "2"]);
+    let monitor = Monitor::mock().workspaces(workspaces.clone()).call();
+
+    let (mut animations, _) = animations();
+
+    set_focused_descendant(&workspaces[1].clone().into(), None);
+    detect_switch(&mut animations, &monitor, &config);
+
+    assert_eq!(animations.displayed_workspaces.len(), 1);
+
+    animations.detect_switches(&[], &config);
+
+    assert!(animations.displayed_workspaces.is_empty());
   }
 }

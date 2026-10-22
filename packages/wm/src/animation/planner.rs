@@ -12,7 +12,8 @@ use wm_platform::Rect;
 
 use super::{
   geometry::{
-    beyond_edge, intersection, scale_about_center, SlideEdge, POPIN_SCALE,
+    beyond_edge, intersection, scale_about_center, SlideEdge,
+    SwitchDirection, POPIN_SCALE,
   },
   timeline::{Frame, Timing},
 };
@@ -29,16 +30,14 @@ const MIN_MOVE_DISTANCE_PX: i32 = 4;
 pub enum SwitchRole {
   /// The window's workspace is becoming displayed.
   Entering {
-    /// Whether the switch moved forward in the monitor's workspace
-    /// order.
-    is_forward: bool,
+    /// Direction of the switch in the monitor's workspace order.
+    direction: SwitchDirection,
   },
 
   /// The window's workspace stops being displayed.
   Leaving {
-    /// Whether the switch moved forward in the monitor's workspace
-    /// order.
-    is_forward: bool,
+    /// Direction of the switch in the monitor's workspace order.
+    direction: SwitchDirection,
   },
 }
 
@@ -131,15 +130,15 @@ pub fn plan(input: &PlanInput, config: &AnimationsConfig) -> Option<Plan> {
   }
 
   match input.switch_role {
-    Some(SwitchRole::Entering { is_forward })
+    Some(SwitchRole::Entering { direction })
       if !input.before.is_visible && input.after.is_visible =>
     {
-      return plan_switch(input, config, is_forward, true);
+      return plan_switch(input, config, direction, true);
     }
-    Some(SwitchRole::Leaving { is_forward })
+    Some(SwitchRole::Leaving { direction })
       if input.before.is_visible && !input.after.is_visible =>
     {
-      return plan_switch(input, config, is_forward, false);
+      return plan_switch(input, config, direction, false);
     }
     _ => {}
   }
@@ -218,7 +217,7 @@ fn plan_open(
 fn plan_switch(
   input: &PlanInput,
   config: &AnimationsConfig,
-  is_forward: bool,
+  direction: SwitchDirection,
   is_entering: bool,
 ) -> Option<Plan> {
   let switch_config = &config.workspace_switch;
@@ -227,12 +226,6 @@ fn plan_switch(
     return None;
   }
 
-  let edge = SlideEdge::for_switch(
-    switch_config.style,
-    switch_config.direction,
-    is_forward,
-  );
-
   // Frame of the window while it's off the monitor (or faded out). The
   // incoming workspace comes in from `edge`, and the outgoing workspace
   // leaves through the opposite edge.
@@ -240,6 +233,15 @@ fn plan_switch(
     WorkspaceSwitchAnimationStyle::None => return None,
     WorkspaceSwitchAnimationStyle::Slide
     | WorkspaceSwitchAnimationStyle::SlideVert => {
+      // Without a direction, an automatic slide could play from the
+      // wrong edge. Don't animate the switch rather than lying about
+      // where the workspace came from.
+      let edge = SlideEdge::for_switch(
+        switch_config.style,
+        switch_config.direction,
+        direction,
+      )?;
+
       let edge = if is_entering { edge } else { edge.opposite() };
 
       Frame::opaque(beyond_edge(
@@ -368,7 +370,7 @@ fn plan_move(
 #[cfg(test)]
 mod tests {
   use wm_common::{
-    AnimationsConfig, WindowOpenAnimationStyle,
+    AnimationDirection, AnimationsConfig, WindowOpenAnimationStyle,
     WorkspaceSwitchAnimationStyle,
   };
 
@@ -482,7 +484,9 @@ mod tests {
   fn slides_in_entering_workspace() {
     let plan = plan(
       &PlanInput {
-        switch_role: Some(SwitchRole::Entering { is_forward: true }),
+        switch_role: Some(SwitchRole::Entering {
+          direction: SwitchDirection::Forward,
+        }),
         before: hidden(),
         ..input()
       },
@@ -503,7 +507,9 @@ mod tests {
   fn slides_out_leaving_workspace() {
     let plan = plan(
       &PlanInput {
-        switch_role: Some(SwitchRole::Leaving { is_forward: true }),
+        switch_role: Some(SwitchRole::Leaving {
+          direction: SwitchDirection::Forward,
+        }),
         after: hidden(),
         ..input()
       },
@@ -525,7 +531,9 @@ mod tests {
 
     let leaving = plan(
       &PlanInput {
-        switch_role: Some(SwitchRole::Leaving { is_forward: false }),
+        switch_role: Some(SwitchRole::Leaving {
+          direction: SwitchDirection::Backward,
+        }),
         after: hidden(),
         ..input()
       },
@@ -539,13 +547,58 @@ mod tests {
 
     assert!(plan(
       &PlanInput {
-        switch_role: Some(SwitchRole::Leaving { is_forward: false }),
+        switch_role: Some(SwitchRole::Leaving {
+          direction: SwitchDirection::Backward,
+        }),
         after: hidden(),
         ..input()
       },
       &config,
     )
     .is_none());
+  }
+
+  #[test]
+  fn skips_auto_slide_without_a_switch_direction() {
+    let entering = PlanInput {
+      switch_role: Some(SwitchRole::Entering {
+        direction: SwitchDirection::Unknown,
+      }),
+      before: hidden(),
+      ..input()
+    };
+
+    // An automatic slide without a known direction would play from an
+    // arbitrary edge.
+    assert!(plan(&entering, &config()).is_none());
+
+    // A fixed direction doesn't depend on the switch direction.
+    let mut config = config();
+    config.workspace_switch.style =
+      WorkspaceSwitchAnimationStyle::SlideVert;
+    config.workspace_switch.direction = AnimationDirection::Down;
+
+    assert!(plan(&entering, &config).is_some());
+  }
+
+  #[test]
+  fn fades_workspaces_without_a_switch_direction() {
+    let mut config = config();
+    config.workspace_switch.style = WorkspaceSwitchAnimationStyle::Fade;
+
+    let plan = plan(
+      &PlanInput {
+        switch_role: Some(SwitchRole::Entering {
+          direction: SwitchDirection::Unknown,
+        }),
+        before: hidden(),
+        ..input()
+      },
+      &config,
+    )
+    .unwrap();
+
+    assert!(plan.target.end_visible);
   }
 
   #[test]
@@ -583,7 +636,9 @@ mod tests {
   fn clips_slides_to_work_area() {
     let plan = plan(
       &PlanInput {
-        switch_role: Some(SwitchRole::Entering { is_forward: true }),
+        switch_role: Some(SwitchRole::Entering {
+          direction: SwitchDirection::Forward,
+        }),
         before: hidden(),
         target_rect: Rect::from_xy(0, 40, 960, 1000),
         ..input()
@@ -603,7 +658,9 @@ mod tests {
   fn plan_fullscreen_switch() -> Plan {
     plan(
       &PlanInput {
-        switch_role: Some(SwitchRole::Entering { is_forward: true }),
+        switch_role: Some(SwitchRole::Entering {
+          direction: SwitchDirection::Forward,
+        }),
         before: hidden(),
         target_rect: monitor(),
         ..input()
