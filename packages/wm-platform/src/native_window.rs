@@ -574,7 +574,8 @@ impl NativeWindow {
   /// - **Windows**: Minimizes the same way as the window's minimize button
   ///   (`WM_SYSCOMMAND` with `SC_MINIMIZE`), so the app handles it like a
   ///   minimize by the user. Apps that minimize to the tray do that here
-  ///   too.
+  ///   too. Hung windows (and windows that can't be posted to) are
+  ///   minimized directly by the system instead.
   pub fn minimize(&self) -> crate::Result<()> {
     self.inner.minimize()
   }
