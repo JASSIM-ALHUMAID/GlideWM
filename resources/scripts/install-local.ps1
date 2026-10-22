@@ -5,12 +5,16 @@
 # certificate and installed in a secure location (e.g. Program Files). This
 # script:
 #   1. Builds the release binaries.
-#   2. Creates a self-signed code signing certificate for the current user
-#      (once; its private key can't be exported).
-#   3. Signs the binaries with it.
-#   4. Trusts the certificate machine-wide and copies the binaries to the
-#      install directory (one UAC prompt).
-#   5. Restarts GlideWM from the install directory and registers it to run
+#   2. Elevates (one UAC prompt), then:
+#      a. Creates a self-signed code signing certificate in the machine
+#         store (once). Its private key can't be exported, and only
+#         administrators can use it, so nothing running as the user can
+#         sign code that the machine trusts.
+#      b. Signs the binaries in an admin-only staging directory, so that
+#         they can't be swapped between signing and installing.
+#      c. Trusts the certificate machine-wide and moves the binaries to the
+#         install directory.
+#   3. Restarts GlideWM from the install directory and registers it to run
 #      on login.
 #
 # Usage:
@@ -20,8 +24,9 @@
 #
 # To uninstall, delete the install directory, the `GlideWM` value under
 # `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, and the certificate
-# (subject `CN=GlideWM Local Code Signing`) from `Cert:\CurrentUser\My`,
-# `Cert:\LocalMachine\Root` and `Cert:\LocalMachine\TrustedPublisher`.
+# (subject `CN=GlideWM Local Code Signing`) from `Cert:\LocalMachine\My`
+# (with its private key), `Cert:\LocalMachine\Root` and
+# `Cert:\LocalMachine\TrustedPublisher`.
 param(
   [string]$SourceDir = (Join-Path $PSScriptRoot "..\..\target\release"),
   # `ProgramW6432` is the 64-bit Program Files directory, also when this
@@ -36,8 +41,7 @@ param(
 
   # Internal: runs the steps that need administrator rights.
   [switch]$Elevated,
-  [string]$StagingDir,
-  [string]$CertPath
+  [string]$StagingDir
 )
 
 $ErrorActionPreference = "Stop"
@@ -89,31 +93,10 @@ function Build-Binaries() {
   }
 }
 
-# Trusts the certificate machine-wide and copies the staged binaries to the
-# install directory. Runs elevated.
-function Install-Elevated() {
-  $certificate = Get-PfxCertificate -FilePath $CertPath
-
-  foreach ($store in @("Root", "TrustedPublisher")) {
-    $storePath = "Cert:\LocalMachine\$store\$($certificate.Thumbprint)"
-
-    if (!(Test-Path $storePath)) {
-      Import-Certificate -FilePath $CertPath `
-        -CertStoreLocation "Cert:\LocalMachine\$store" | Out-Null
-    }
-  }
-
-  foreach ($target in $Binaries.Values) {
-    $destination = Join-Path $InstallDir $target
-    New-Item -ItemType Directory -Force (Split-Path $destination) | Out-Null
-    Copy-Item (Join-Path $StagingDir $target) $destination -Force
-  }
-}
-
-# Returns the user's code signing certificate, creating it if missing or
-# about to expire.
+# Returns the machine's code signing certificate, creating it if missing or
+# about to expire. Runs elevated.
 function Get-SigningCertificate() {
-  $certificate = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert |
+  $certificate = Get-ChildItem Cert:\LocalMachine\My -CodeSigningCert |
     Where-Object {
       $_.Subject -eq $CertSubject -and
       $_.HasPrivateKey -and
@@ -128,6 +111,8 @@ function Get-SigningCertificate() {
 
   Write-Host "Creating code signing certificate '$CertSubject'."
 
+  # Machine keys of the software key storage provider are only accessible
+  # to administrators and SYSTEM.
   return New-SelfSignedCertificate `
     -Type CodeSigningCert `
     -Subject $CertSubject `
@@ -135,8 +120,79 @@ function Get-SigningCertificate() {
     -KeyLength 3072 `
     -HashAlgorithm SHA256 `
     -KeyExportPolicy NonExportable `
+    -Provider "Microsoft Software Key Storage Provider" `
     -NotAfter (Get-Date).AddYears(5) `
-    -CertStoreLocation Cert:\CurrentUser\My
+    -CertStoreLocation Cert:\LocalMachine\My
+}
+
+# Removes the certificates with the signing subject from the given store,
+# except the one with the given thumbprint. Private keys are deleted along
+# with their certificates.
+function Remove-StaleCertificates([string]$StorePath, [string]$Thumbprint) {
+  Get-ChildItem $StorePath |
+    Where-Object {
+      $_.Subject -eq $CertSubject -and $_.Thumbprint -ne $Thumbprint
+    } |
+    ForEach-Object {
+      Write-Host "Removing stale certificate $($_.Thumbprint) from '$StorePath'."
+      Remove-Item $_.PSPath -DeleteKey -ErrorAction SilentlyContinue
+      if (Test-Path $_.PSPath) {
+        Remove-Item $_.PSPath
+      }
+    }
+}
+
+# Signs the staged binaries, trusts the certificate machine-wide, and moves
+# the binaries to the install directory. Runs elevated.
+function Install-Elevated() {
+  $certificate = Get-SigningCertificate
+
+  # Binaries are copied out of the user-writable staging directory before
+  # they're signed, so that they can't be swapped after signing. The
+  # private directory inherits the admin-only ACL of Program Files.
+  $privateStaging = "$InstallDir.staging"
+  Remove-Item $privateStaging -Recurse -Force -ErrorAction SilentlyContinue
+
+  try {
+    foreach ($target in $Binaries.Values) {
+      $staged = Join-Path $privateStaging $target
+      New-Item -ItemType Directory -Force (Split-Path $staged) | Out-Null
+      Copy-Item (Join-Path $StagingDir $target) $staged
+
+      $signature = Set-AuthenticodeSignature -FilePath $staged `
+        -Certificate $certificate -HashAlgorithm SHA256
+
+      if (!$signature.SignerCertificate) {
+        throw "Failed to sign '$target': $($signature.StatusMessage)"
+      }
+    }
+
+    # The trusted stores only need the public certificate.
+    $certPath = Join-Path $privateStaging "signing.cer"
+    Export-Certificate -Cert $certificate -FilePath $certPath | Out-Null
+
+    foreach ($store in @("Root", "TrustedPublisher")) {
+      $storePath = "Cert:\LocalMachine\$store"
+
+      if (!(Test-Path "$storePath\$($certificate.Thumbprint)")) {
+        Import-Certificate -FilePath $certPath `
+          -CertStoreLocation $storePath | Out-Null
+      }
+
+      Remove-StaleCertificates $storePath $certificate.Thumbprint
+    }
+
+    Remove-StaleCertificates "Cert:\LocalMachine\My" $certificate.Thumbprint
+
+    foreach ($target in $Binaries.Values) {
+      $destination = Join-Path $InstallDir $target
+      New-Item -ItemType Directory -Force (Split-Path $destination) | Out-Null
+      Copy-Item (Join-Path $privateStaging $target) $destination -Force
+    }
+  }
+  finally {
+    Remove-Item $privateStaging -Recurse -Force -ErrorAction SilentlyContinue
+  }
 }
 
 # Exits GlideWM if it's running, and waits for it to clean up.
@@ -194,30 +250,18 @@ if (!$manifestMatch) {
   throw "glidewm.exe wasn't built with the 'ui_access' feature."
 }
 
-$certificate = Get-SigningCertificate
-
 $staging = Join-Path ([IO.Path]::GetTempPath()) "glidewm-install-$PID"
-$certPath = Join-Path $staging "signing.cer"
 
 try {
   foreach ($entry in $Binaries.GetEnumerator()) {
     $staged = Join-Path $staging $entry.Value
     New-Item -ItemType Directory -Force (Split-Path $staged) | Out-Null
     Copy-Item (Join-Path $SourceDir $entry.Key) $staged
-
-    $signature = Set-AuthenticodeSignature -FilePath $staged `
-      -Certificate $certificate -HashAlgorithm SHA256
-
-    if (!$signature.SignerCertificate) {
-      throw "Failed to sign '$($entry.Key)': $($signature.StatusMessage)"
-    }
   }
-
-  Export-Certificate -Cert $certificate -FilePath $certPath | Out-Null
 
   Stop-GlideWM
 
-  Write-Host "Installing to '$InstallDir' (requires administrator rights)."
+  Write-Host "Signing and installing to '$InstallDir' (requires administrator rights)."
 
   $shell = (Get-Process -Id $PID).Path
   $arguments = @(
@@ -225,8 +269,7 @@ try {
     "-File", "`"$PSCommandPath`"",
     "-Elevated",
     "-StagingDir", "`"$staging`"",
-    "-InstallDir", "`"$InstallDir`"",
-    "-CertPath", "`"$certPath`""
+    "-InstallDir", "`"$InstallDir`""
   )
 
   $process = Start-Process $shell -ArgumentList $arguments `
@@ -241,6 +284,15 @@ try {
 finally {
   Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+# Earlier versions of this script kept the signing key in the user's store,
+# where anything running as the user could sign code with it.
+Get-ChildItem Cert:\CurrentUser\My |
+  Where-Object { $_.Subject -eq $CertSubject } |
+  ForEach-Object {
+    Write-Host "Removing legacy user signing certificate $($_.Thumbprint)."
+    Remove-Item $_.PSPath -DeleteKey
+  }
 
 $executable = Join-Path $InstallDir "glidewm.exe"
 $signature = Get-AuthenticodeSignature $executable
