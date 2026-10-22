@@ -927,7 +927,7 @@ impl ScrollConfigOverrides {
   #[must_use]
   pub fn apply_to(&self, base: &ScrollConfig) -> ScrollConfig {
     ScrollConfig {
-      axis: self.axis.clone().unwrap_or_else(|| base.axis.clone()),
+      axis: self.axis.unwrap_or(base.axis),
       window_width: self.window_width.unwrap_or(base.window_width),
       window_height: self.window_height.unwrap_or(base.window_height),
       preset_widths: self
@@ -938,11 +938,10 @@ impl ScrollConfigOverrides {
         .preset_heights
         .clone()
         .unwrap_or_else(|| base.preset_heights.clone()),
-      align: self.align.clone().unwrap_or_else(|| base.align.clone()),
+      align: self.align.unwrap_or(base.align),
       insert_position: self
         .insert_position
-        .clone()
-        .unwrap_or_else(|| base.insert_position.clone()),
+        .unwrap_or(base.insert_position),
       offscreen_windows: self
         .offscreen_windows
         .unwrap_or(base.offscreen_windows),
@@ -974,8 +973,7 @@ impl BspConfigOverrides {
     BspConfig {
       automatic_scheme: self
         .automatic_scheme
-        .clone()
-        .unwrap_or_else(|| base.automatic_scheme.clone()),
+        .unwrap_or(base.automatic_scheme),
     }
   }
 
@@ -1264,7 +1262,9 @@ fn normalize_preset_sizes(sizes: Vec<f32>) -> anyhow::Result<Vec<f32>> {
 }
 
 /// How the viewport scrolls to keep the focused strip item in view.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ScrollAlign {
   /// Scroll the least amount required to make the item fully visible.
@@ -1276,7 +1276,9 @@ pub enum ScrollAlign {
 }
 
 /// Where new strip items are inserted in a scrolling workspace.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ScrollInsertPosition {
   /// Insert at the start of the strip (the top for a vertical scroll
@@ -1307,7 +1309,9 @@ pub struct BspConfig {
 /// How new split directions are chosen in the BSP layout.
 ///
 /// Mirrors the `automatic_scheme` setting of bspwm.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum BspAutomaticScheme {
   /// Split the longer side of the focused container's rect: a wide rect

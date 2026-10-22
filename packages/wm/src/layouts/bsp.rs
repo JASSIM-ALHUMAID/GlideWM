@@ -308,7 +308,7 @@ fn build_balanced_tree(
     BspAutomaticScheme::LongestSide => longest_side_direction(rect),
     BspAutomaticScheme::Alternate => {
       if depth % 2 == 0 {
-        base_direction.clone()
+        *base_direction
       } else {
         base_direction.inverse()
       }

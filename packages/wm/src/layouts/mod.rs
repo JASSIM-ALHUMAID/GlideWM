@@ -488,7 +488,7 @@ pub fn initial_tiling_direction(
 ) -> TilingDirection {
   match config.layout {
     // Scrolling workspaces initialize their scroll axis from config.
-    WorkspaceLayout::Scrolling => config.scroll.axis.clone(),
+    WorkspaceLayout::Scrolling => config.scroll.axis,
     // Default the tiling direction based on the monitor's orientation.
     WorkspaceLayout::Tiling | WorkspaceLayout::Bsp => {
       if monitor_rect.height() > monitor_rect.width() {
@@ -627,7 +627,7 @@ pub fn on_workspace_config_reloaded(
 ) -> anyhow::Result<()> {
   if prev_config.layout != new_config.layout {
     if new_config.layout == WorkspaceLayout::Scrolling {
-      workspace.set_tiling_direction(new_config.scroll.axis.clone());
+      workspace.set_tiling_direction(new_config.scroll.axis);
     }
 
     return on_layout_changed(
@@ -642,7 +642,7 @@ pub fn on_workspace_config_reloaded(
   if new_config.layout == WorkspaceLayout::Scrolling
     && prev_config.scroll.axis != new_config.scroll.axis
   {
-    workspace.set_tiling_direction(new_config.scroll.axis.clone());
+    workspace.set_tiling_direction(new_config.scroll.axis);
   }
 
   Ok(())
