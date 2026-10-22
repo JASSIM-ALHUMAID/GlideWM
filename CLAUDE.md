@@ -17,7 +17,7 @@ Branches:
 - **`my-glide`**: the fork's main branch and the GitHub default branch. All GlideWM work lands here; base feature branches and PRs on it.
 - **`main`**: mirrors upstream `glzr-io/glazewm` `main` (remote `upstream`). Never commit or push fork work to it; only fast-forward it from `upstream/main`.
 
-Installing: `resources/scripts/install-local.ps1` is the only supported install path (signed UIAccess build). No MSI is built.
+Installing: `resources/scripts/install-local.ps1` is the supported install path (signed UIAccess build); `install-local-user.ps1` is the no-admin variant (unsigned, can't manage elevated windows). No MSI is built.
 
 </project_overview>
 

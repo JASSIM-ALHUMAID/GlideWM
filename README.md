@@ -126,6 +126,11 @@ Program Files and trusts the certificate machine-wide. The certificate's private
 kept in the machine store, where only administrators can use it, so nothing running as
 your user can sign code with it. Signing happens in the elevated step.
 
+If you don't want a UAC prompt and can live without managing elevated windows, run
+`./resources/scripts/install-local-user.ps1` instead. It builds without `ui_access`, copies
+the binaries to `%LOCALAPPDATA%\Programs\GlideWM`, adds the CLI to your user `PATH`,
+registers GlideWM for login, and launches it, all without administrator rights.
+
 The script is currently the only supported way to install GlideWM. The WiX installer
 sources in `resources/wix` are kept, but no installer is built or published, since an
 installer without a trusted (paid) code-signing certificate can't grant UIAccess. Zebar is
