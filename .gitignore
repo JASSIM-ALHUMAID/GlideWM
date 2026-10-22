@@ -12,7 +12,7 @@ out/
 
 # Local development files
 devfiles/
-docs/dps/
+docs/
 
 # IDE files
 .vs/
