@@ -243,11 +243,17 @@ if ($Elevated) {
   }
 }
 
-$SourceDir = (Resolve-Path $SourceDir).Path
-
 if (!$SkipBuild) {
   Build-Binaries
 }
+
+# Resolved after the build, since the build creates the directory on a fresh
+# checkout. Relative paths are resolved against the caller's directory.
+if (!(Test-Path $SourceDir)) {
+  throw "Source directory '$SourceDir' doesn't exist. It's produced by the release build; omit -SkipBuild, or pass -SourceDir."
+}
+
+$SourceDir = (Resolve-Path $SourceDir).Path
 
 foreach ($source in $Binaries.Keys) {
   if (!(Test-Path (Join-Path $SourceDir $source))) {
