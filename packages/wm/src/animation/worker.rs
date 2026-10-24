@@ -168,9 +168,6 @@ pub trait ThumbnailBackend {
     frame: &ThumbnailFrame,
   ) -> anyhow::Result<()>;
 
-  /// Size of the thumbnail's source window, as `(width, height)`.
-  fn source_size(&self, id: Self::Id) -> Option<(i32, i32)>;
-
   /// Removes a registered thumbnail.
   fn unregister(&mut self, id: Self::Id);
 
@@ -483,7 +480,9 @@ impl<B: ThumbnailBackend> Worker<B> {
 
         let start = Frame::opaque(current);
 
-        if let Err(err) = self.draw(thumbnail, &start, None) {
+        if let Err(err) =
+          self.draw(request.handle, thumbnail, &start, None)
+        {
           tracing::warn!("Failed to draw window thumbnail: {err}");
           self.backend.unregister(thumbnail);
           emit(aborted);
@@ -619,7 +618,9 @@ impl<B: ThumbnailBackend> Worker<B> {
 
         self.animations[index].thumbnail = Some(thumbnail);
 
-        if let Err(err) = self.draw(thumbnail, &from, clip.as_ref()) {
+        if let Err(err) =
+          self.draw(handle, thumbnail, &from, clip.as_ref())
+        {
           tracing::warn!("Failed to draw window thumbnail: {err}");
           return Some(aborted);
         }
@@ -682,8 +683,9 @@ impl<B: ThumbnailBackend> Worker<B> {
     let sequence = animation.sequence;
     let end_visible = animation.target.end_visible;
     let clip = animation.target.clip.clone();
+    let handle = animation.handle;
 
-    if let Err(err) = self.draw(thumbnail, &frame, clip.as_ref()) {
+    if let Err(err) = self.draw(handle, thumbnail, &frame, clip.as_ref()) {
       tracing::warn!("Failed to draw window thumbnail: {err}");
 
       return Some(AnimationUpdate::Aborted {
@@ -713,17 +715,25 @@ impl<B: ThumbnailBackend> Worker<B> {
     None
   }
 
-  /// Draws a thumbnail at the given frame, clipped to `clip`.
+  /// Draws the thumbnail of the window with the given handle at the given
+  /// frame, clipped to `clip`.
   fn draw(
     &mut self,
+    handle: WindowId,
     thumbnail: B::Id,
     frame: &Frame,
     clip: Option<&Rect>,
   ) -> anyhow::Result<()> {
-    let source_size = self
-      .backend
-      .source_size(thumbnail)
-      .unwrap_or((frame.rect.width(), frame.rect.height()));
+    // The source is sized from the window rect, since DWM reads `rcSource`
+    // in window rect coordinates (which include the invisible resize
+    // borders), while the visible frame size is what DWM reports as the
+    // source size. The window rect is queried on every draw, because the
+    // thumbnail is live and the window may be resized mid-animation.
+    let source_size =
+      self.backend.window_frame(handle).map_or(
+        (frame.rect.width(), frame.rect.height()),
+        |window_rect| (window_rect.width(), window_rect.height()),
+      );
 
     // Opacity is within `0.0..=1.0`, so the cast can't truncate.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -869,10 +879,6 @@ mod dwm {
       Ok(overlay.update(id, frame)?)
     }
 
-    fn source_size(&self, id: ThumbnailId) -> Option<(i32, i32)> {
-      self.overlay.as_ref()?.source_size(id).ok()
-    }
-
     fn unregister(&mut self, id: ThumbnailId) {
       if let Some(overlay) = &mut self.overlay {
         if let Err(err) = overlay.unregister(id) {
@@ -945,12 +951,6 @@ mod tests {
     ) -> anyhow::Result<()> {
       self.updates.push((id, frame.clone()));
       Ok(())
-    }
-
-    fn source_size(&self, id: u32) -> Option<(i32, i32)> {
-      let handle = self.registered.get(&id)?;
-      let frame = self.frames.get(handle)?;
-      Some((frame.width(), frame.height()))
     }
 
     fn unregister(&mut self, id: u32) {
@@ -1054,6 +1054,16 @@ mod tests {
         .updates
         .last()
         .map(|(_, frame)| frame.destination.clone())
+        .unwrap()
+    }
+
+    fn last_source(&self) -> Rect {
+      self
+        .worker
+        .backend
+        .updates
+        .last()
+        .map(|(_, frame)| frame.source.clone())
         .unwrap()
     }
   }
@@ -1324,6 +1334,67 @@ mod tests {
     // before the settle timeout.
     harness.frame(16);
     assert_eq!(harness.worker.backend.registered.len(), 1);
+  }
+
+  #[test]
+  fn thumbnail_source_uses_window_rect_size() {
+    let id = Uuid::new_v4();
+    let mut harness = Harness::new();
+
+    // The window's rect is larger than the animation's destination, so
+    // sizing the source from the destination would give a different
+    // result.
+    let window_rect = Rect::from_xy(300, 0, 120, 110);
+    harness
+      .worker
+      .backend
+      .frames
+      .insert(HANDLE, window_rect.clone());
+
+    harness.send(begin(
+      id,
+      StartFrame::Hidden {
+        from: Frame::opaque(rect(2000)),
+        settle: window_rect,
+      },
+      target(300, true),
+    ));
+    // The window is settled, so the thumbnail is drawn at `from`.
+    harness.frame(16);
+
+    assert_eq!(harness.last_destination(), rect(2000));
+    assert_eq!(harness.last_source(), Rect::from_xy(0, 0, 120, 110));
+  }
+
+  #[test]
+  fn thumbnail_source_follows_window_resize() {
+    let id = Uuid::new_v4();
+    let mut harness = Harness::new();
+    harness
+      .worker
+      .backend
+      .frames
+      .insert(HANDLE, Rect::from_xy(0, 0, 120, 110));
+
+    harness.send(begin(id, StartFrame::Cover, target(500, true)));
+    harness.frame(0);
+    harness.frame(16);
+    harness.send(WorkerCommand::Release {
+      window_id: id,
+      sequence: 1,
+    });
+    harness.frame(0);
+    harness.frame(50);
+    assert_eq!(harness.last_source(), Rect::from_xy(0, 0, 120, 110));
+
+    // The window is resized while its thumbnail is animating.
+    harness
+      .worker
+      .backend
+      .frames
+      .insert(HANDLE, Rect::from_xy(0, 0, 130, 115));
+    harness.frame(50);
+    assert_eq!(harness.last_source(), Rect::from_xy(0, 0, 130, 115));
   }
 
   #[test]

@@ -21,9 +21,8 @@ pub struct ThumbnailFrame {
   pub destination: Rect,
 
   /// Part of the source window that's drawn, relative to the window's
-  /// top-left corner. The full window is
-  /// `(0, 0, source_width, source_height)` (see
-  /// [`ThumbnailOverlay::source_size`]).
+  /// top-left corner, in the coordinate space of [`window_frame`] (i.e.
+  /// including invisible borders).
   pub source: Rect,
 
   /// Opacity of the thumbnail, from transparent (`0`) to opaque (`255`).
@@ -86,12 +85,6 @@ impl ThumbnailOverlay {
     frame: &ThumbnailFrame,
   ) -> crate::Result<()> {
     self.inner.update(id, frame)
-  }
-
-  /// Gets the size of the thumbnail's source window, as `(width,
-  /// height)`.
-  pub fn source_size(&self, id: ThumbnailId) -> crate::Result<(i32, i32)> {
-    self.inner.source_size(id)
   }
 
   /// Removes a registered thumbnail. Takes effect on the next

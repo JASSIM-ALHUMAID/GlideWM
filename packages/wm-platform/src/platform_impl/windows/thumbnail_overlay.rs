@@ -10,10 +10,10 @@ use windows::{
   Win32::{
     Foundation::{BOOL, HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Dwm::{
-      DwmFlush, DwmQueryThumbnailSourceSize, DwmRegisterThumbnail,
-      DwmUnregisterThumbnail, DwmUpdateThumbnailProperties,
-      DWM_THUMBNAIL_PROPERTIES, DWM_TNP_OPACITY, DWM_TNP_RECTDESTINATION,
-      DWM_TNP_RECTSOURCE, DWM_TNP_SOURCECLIENTAREAONLY, DWM_TNP_VISIBLE,
+      DwmFlush, DwmRegisterThumbnail, DwmUnregisterThumbnail,
+      DwmUpdateThumbnailProperties, DWM_THUMBNAIL_PROPERTIES,
+      DWM_TNP_OPACITY, DWM_TNP_RECTDESTINATION, DWM_TNP_RECTSOURCE,
+      DWM_TNP_SOURCECLIENTAREAONLY, DWM_TNP_VISIBLE,
     },
     System::LibraryLoader::GetModuleHandleW,
     UI::WindowsAndMessaging::{
@@ -170,22 +170,6 @@ impl ThumbnailOverlay {
     unsafe { DwmUpdateThumbnailProperties(id.0, &raw const properties) }?;
 
     Ok(())
-  }
-
-  /// Implements
-  /// [`ThumbnailOverlay::source_size`](crate::ThumbnailOverlay::source_size).
-  // LINT: Thumbnails belong to the overlay, so the method is scoped to
-  // it even though DWM identifies thumbnails by ID alone.
-  #[allow(clippy::unused_self)]
-  pub(crate) fn source_size(
-    &self,
-    id: ThumbnailId,
-  ) -> crate::Result<(i32, i32)> {
-    // SAFETY: DWM validates the thumbnail ID and returns an error for
-    // unknown ones.
-    let size = unsafe { DwmQueryThumbnailSourceSize(id.0) }?;
-
-    Ok((size.cx, size.cy))
   }
 
   /// Implements
