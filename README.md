@@ -1,7 +1,7 @@
 <div align="center">
 
   <br>
-  <img src="./resources/assets/logo.svg" width="230" alt="GlideWM logo" />
+  <img src="./resources/assets/icon.png" width="160" alt="GlideWM logo" />
   <br>
 
 # GlideWM
