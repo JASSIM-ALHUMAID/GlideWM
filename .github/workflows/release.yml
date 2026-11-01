@@ -1,0 +1,105 @@
+name: release
+
+# Builds a portable x64 zip of GlideWM and publishes it as a GitHub Release.
+#
+# - Pushing a tag like `v0.2.0` builds the zip and creates the release.
+# - Running the workflow manually builds the zip and uploads it as a
+#   workflow artifact only, which is handy for testing.
+#
+# The binaries are unsigned and built without the `ui_access` feature, so
+# GlideWM can't manage windows of elevated processes (e.g. Task Manager).
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version number (major.minor.patch) shown in the tray"
+        required: false
+        default: "0.0.0"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          } else {
+            $version = '${{ inputs.version }}'
+          }
+
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Invalid version '$version'. Expected 'major.minor.patch'."
+          }
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      # The channel is pinned by `rust-toolchain.toml`.
+      - name: Install Rust toolchain
+        shell: pwsh
+        run: rustup toolchain install --profile minimal
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        shell: pwsh
+        env:
+          VERSION_NUMBER: ${{ steps.version.outputs.version }}
+        run: cargo build --release --locked -p wm -p wm-watcher
+
+      - name: Package
+        id: package
+        shell: pwsh
+        run: |
+          $name = "GlideWM-${{ steps.version.outputs.version }}-x64"
+          $stage = Join-Path $env:RUNNER_TEMP $name
+          New-Item -ItemType Directory -Path $stage | Out-Null
+
+          Copy-Item target/release/glidewm.exe $stage
+          Copy-Item target/release/glidewm-watcher.exe $stage
+
+          @"
+          GlideWM ${{ steps.version.outputs.version }}
+
+          Double-click glidewm.exe to start. Keep glidewm-watcher.exe next
+          to it; it restores hidden windows if GlideWM crashes.
+
+          A default config is created on first run at
+          %USERPROFILE%\.glidewm\config.yaml.
+          "@ | Set-Content (Join-Path $stage 'README.txt')
+
+          $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+          Compress-Archive -Path $stage -DestinationPath $zip
+
+          "zip=$zip" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GlideWM-${{ steps.version.outputs.version }}-x64
+          path: ${{ steps.package.outputs.zip }}
+          if-no-files-found: error
+
+      - name: Create release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$env:GITHUB_REF_NAME"
+          "${{ steps.package.outputs.zip }}"
+          --title "GlideWM ${{ steps.version.outputs.version }}"
+          --generate-notes
