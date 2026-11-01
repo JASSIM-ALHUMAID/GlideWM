@@ -121,7 +121,7 @@ pub(super) fn insert_window_into_workspace(
 ///
 /// The split's tiling direction is chosen per the workspace's configured
 /// automatic scheme.
-fn split_for_insertion(
+pub(super) fn split_for_insertion(
   sibling: &Container,
   workspace: &Workspace,
 ) -> anyhow::Result<SplitContainer> {
@@ -177,7 +177,7 @@ fn insertion_direction(
 /// Direction to halve `rect` along: a wide rect is cut by a vertical
 /// split line into side-by-side children (a horizontal tiling
 /// direction), a tall rect into stacked children.
-fn longest_side_direction(rect: &Rect) -> TilingDirection {
+pub(super) fn longest_side_direction(rect: &Rect) -> TilingDirection {
   if rect.width() >= rect.height() {
     TilingDirection::Horizontal
   } else {
@@ -895,13 +895,16 @@ mod tests {
     )
     .unwrap();
 
-    // The windows stay direct children of the workspace, and are scaled
-    // down to fill the viewport together.
+    // The windows stay direct children of the workspace with their
+    // sizes. The workspace keeps its strip, and windows opened afterwards
+    // are arranged by the BSP layout in a layout group (see
+    // `layouts::groups`).
     assert_eq!(workspace.child_count(), 3);
+    assert!(workspace.has_retained_strip());
 
     for window in &windows {
       assert_eq!(window.parent().unwrap().id(), workspace.id());
-      assert!((window.tiling_size() - 1. / 3.).abs() < 0.001);
+      assert!((window.tiling_size() - 0.7).abs() < f32::EPSILON);
     }
   }
 

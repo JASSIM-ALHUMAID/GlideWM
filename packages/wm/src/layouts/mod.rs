@@ -35,6 +35,8 @@
 
 pub(crate) mod bsp;
 
+pub(crate) mod groups;
+
 pub mod scrolling;
 
 pub(crate) mod tiling;
@@ -92,6 +94,21 @@ impl WindowPlacement {
   }
 }
 
+/// The layout that arranges the direct children of `workspace`.
+///
+/// This is the workspace's layout, except when the workspace retained its
+/// scrolling strip after a layout switch with `layout_switch: keep` (see
+/// [`groups`]): its top level is then still a strip, while the workspace's
+/// layout is the one that new windows are arranged by inside layout
+/// groups.
+fn top_level_layout(workspace: &Workspace) -> WorkspaceLayout {
+  if workspace.has_retained_strip() {
+    WorkspaceLayout::Scrolling
+  } else {
+    workspace.layout()
+  }
+}
+
 /// The layout of `container` when it is a direction container (i.e. a
 /// container that arranges tiling children).
 ///
@@ -101,7 +118,9 @@ fn layout_of_direction_container(
   container: &DirectionContainer,
 ) -> WorkspaceLayout {
   match container {
-    DirectionContainer::Workspace(workspace) => workspace.layout(),
+    DirectionContainer::Workspace(workspace) => {
+      top_level_layout(workspace)
+    }
     DirectionContainer::Split(_) => WorkspaceLayout::Tiling,
   }
 }
@@ -111,7 +130,7 @@ fn layout_of_direction_container(
 /// semantics (e.g. split containers).
 fn layout_of_container(container: &Container) -> WorkspaceLayout {
   match container {
-    Container::Workspace(workspace) => workspace.layout(),
+    Container::Workspace(workspace) => top_level_layout(workspace),
     _ => WorkspaceLayout::Tiling,
   }
 }
@@ -126,7 +145,7 @@ pub fn child_rect(
   child: &TilingContainer,
   parent_rect: &Rect,
 ) -> anyhow::Result<Rect> {
-  match workspace.layout() {
+  match top_level_layout(workspace) {
     WorkspaceLayout::Tiling | WorkspaceLayout::Bsp => {
       tiling::child_rect(child, workspace, parent_rect)
     }
@@ -143,7 +162,7 @@ pub fn child_rect(
 /// their siblings return `None`; the child is then sized by
 /// [`on_child_attached`].
 pub fn default_child_size(workspace: &Workspace) -> Option<f32> {
-  match workspace.layout() {
+  match top_level_layout(workspace) {
     WorkspaceLayout::Tiling | WorkspaceLayout::Bsp => None,
     WorkspaceLayout::Scrolling => {
       Some(scrolling::default_item_size(workspace))
@@ -160,7 +179,7 @@ pub fn default_child_size(workspace: &Workspace) -> Option<f32> {
 pub fn child_length_reference(
   workspace: &Workspace,
 ) -> anyhow::Result<Option<i32>> {
-  match workspace.layout() {
+  match top_level_layout(workspace) {
     WorkspaceLayout::Tiling | WorkspaceLayout::Bsp => Ok(None),
     WorkspaceLayout::Scrolling => {
       Ok(Some(scrolling::viewport_extent(workspace)?))
@@ -194,6 +213,15 @@ pub fn on_child_detached(child: &TilingContainer, parent: &Container) {
       tiling::redistribute_freed_space(child, parent);
     }
     WorkspaceLayout::Scrolling => {}
+  }
+
+  // Once the last tiling child is gone, there is no strip to retain.
+  if let Container::Workspace(workspace) = parent {
+    if workspace.has_retained_strip()
+      && workspace.tiling_children().next().is_none()
+    {
+      workspace.set_retained_strip(false);
+    }
   }
 }
 
@@ -289,23 +317,24 @@ pub enum SplitChildFlattening {
 /// For the BSP layout, splits nested inside a BSP workspace are kept as
 /// binary splits too, since they are part of the workspace's tree.
 /// Splits nested in other layouts have the default tiling behavior
-/// (e.g. the interiors of a scrolling workspace's columns).
+/// (e.g. the interiors of a scrolling workspace's columns). Splits inside
+/// a layout group follow the group's layout, and splits in the retained
+/// strip of a workspace follow the scrolling layout (see [`groups`]).
 pub fn split_child_flattening(
   parent: &DirectionContainer,
 ) -> SplitChildFlattening {
   match parent {
-    DirectionContainer::Workspace(workspace) => match workspace.layout() {
-      WorkspaceLayout::Tiling => SplitChildFlattening::Fold,
-      WorkspaceLayout::Scrolling => SplitChildFlattening::PreserveColumns,
-      WorkspaceLayout::Bsp => SplitChildFlattening::PreserveBinarySplits,
-    },
+    DirectionContainer::Workspace(workspace) => {
+      match top_level_layout(workspace) {
+        WorkspaceLayout::Tiling => SplitChildFlattening::Fold,
+        WorkspaceLayout::Scrolling => {
+          SplitChildFlattening::PreserveColumns
+        }
+        WorkspaceLayout::Bsp => SplitChildFlattening::PreserveBinarySplits,
+      }
+    }
     DirectionContainer::Split(split) => {
-      let is_in_bsp_workspace =
-        split.workspace().is_some_and(|workspace| {
-          workspace.layout() == WorkspaceLayout::Bsp
-        });
-
-      if is_in_bsp_workspace {
+      if groups::layout_of_split(split) == WorkspaceLayout::Bsp {
         SplitChildFlattening::PreserveBinarySplits
       } else {
         SplitChildFlattening::Fold
@@ -327,21 +356,49 @@ pub fn insertion_target(
   let focused_workspace =
     focused_container.workspace().context("No workspace.")?;
 
-  match focused_workspace.layout() {
+  insertion_target_for(
+    window_state,
+    &focused_container,
+    &focused_workspace,
+  )
+}
+
+/// Gets where to insert a new window next to `focused_container`, which
+/// is in `focused_workspace`.
+///
+/// Returns tuple of (parent container, insertion index).
+pub(crate) fn insertion_target_for(
+  window_state: &WindowState,
+  focused_container: &Container,
+  focused_workspace: &Workspace,
+) -> anyhow::Result<(Container, usize)> {
+  // A retained strip places windows of a non-scrolling layout in layout
+  // groups.
+  if focused_workspace.has_retained_strip()
+    && focused_workspace.layout() != WorkspaceLayout::Scrolling
+  {
+    return groups::insertion_target(
+      window_state,
+      focused_container,
+      focused_workspace,
+    );
+  }
+
+  match top_level_layout(focused_workspace) {
     WorkspaceLayout::Tiling => tiling::insertion_target(
       window_state,
-      &focused_container,
-      &focused_workspace,
+      focused_container,
+      focused_workspace,
     ),
     WorkspaceLayout::Scrolling => Ok(scrolling::insertion_target(
       window_state,
-      &focused_container,
-      &focused_workspace,
+      focused_container,
+      focused_workspace,
     )),
     WorkspaceLayout::Bsp => bsp::insertion_target(
       window_state,
-      &focused_container,
-      &focused_workspace,
+      focused_container,
+      focused_workspace,
     ),
   }
 }
@@ -358,7 +415,18 @@ pub fn insert_window_into_workspace(
   insertion_sibling: Option<WindowContainer>,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
-  match target_workspace.layout() {
+  if target_workspace.has_retained_strip()
+    && target_workspace.layout() != WorkspaceLayout::Scrolling
+  {
+    return groups::insert_window_into_workspace(
+      window,
+      target_workspace,
+      insertion_sibling,
+      state,
+    );
+  }
+
+  match top_level_layout(target_workspace) {
     WorkspaceLayout::Tiling => tiling::insert_window_into_workspace(
       window,
       target_workspace,
@@ -396,7 +464,7 @@ pub fn move_child_in_direction(
     return None;
   };
 
-  match workspace.layout() {
+  match top_level_layout(workspace) {
     WorkspaceLayout::Tiling | WorkspaceLayout::Bsp => None,
     WorkspaceLayout::Scrolling => {
       Some(scrolling::move_child_in_direction(
@@ -421,7 +489,7 @@ pub fn move_without_target_ancestor(
 ) -> anyhow::Result<()> {
   let workspace = window.workspace().context("No workspace.")?;
 
-  match workspace.layout() {
+  match top_level_layout(&workspace) {
     WorkspaceLayout::Tiling | WorkspaceLayout::Bsp => {
       tiling::invert_workspace_direction(window, direction, state, config)
     }
@@ -473,7 +541,7 @@ pub fn rescale_factor_for_move(
     return 1.;
   };
 
-  match target_workspace.layout() {
+  match top_level_layout(target_workspace) {
     WorkspaceLayout::Tiling | WorkspaceLayout::Bsp => 1.,
     WorkspaceLayout::Scrolling => {
       scrolling::rescale_factor_for_move(container_to_move)
@@ -503,7 +571,7 @@ pub fn initial_tiling_direction(
 /// Whether the workspace's layout supports scrolling its children into
 /// and out of the viewport (e.g. via the `scroll` command).
 pub fn supports_scrolling(workspace: &Workspace) -> bool {
-  match workspace.layout() {
+  match top_level_layout(workspace) {
     WorkspaceLayout::Tiling | WorkspaceLayout::Bsp => false,
     WorkspaceLayout::Scrolling => true,
   }
@@ -512,7 +580,7 @@ pub fn supports_scrolling(workspace: &Workspace) -> bool {
 /// Whether hit tests must be limited to the workspace viewport, because
 /// the layout can place tiling windows outside of it.
 pub fn clips_children_to_viewport(workspace: &Workspace) -> bool {
-  match workspace.layout() {
+  match top_level_layout(workspace) {
     WorkspaceLayout::Tiling | WorkspaceLayout::Bsp => false,
     WorkspaceLayout::Scrolling => true,
   }
@@ -547,7 +615,7 @@ pub fn window_placement(
     return Ok(is_positioned());
   };
 
-  match workspace.layout() {
+  match top_level_layout(&workspace) {
     WorkspaceLayout::Tiling | WorkspaceLayout::Bsp => Ok(is_positioned()),
     WorkspaceLayout::Scrolling => scrolling::placement(window, rect),
   }
@@ -567,8 +635,10 @@ pub fn window_placement(
 /// balanced binary tree (the tree is the structure of the layout
 /// itself), and switching from BSP to scrolling turns the windows of the
 /// tree into separate strip items. With [`LayoutSwitchBehavior::Keep`],
-/// the arrangement is left as-is and only sizes are adjusted where the
-/// new layout requires it.
+/// the arrangement is left as-is. Leaving the scrolling layout retains
+/// the strip untouched, and windows opened afterwards are placed in a
+/// layout group arranged by the new layout (see [`groups`]); otherwise
+/// sizes are adjusted where the new layout requires it.
 pub fn on_layout_changed(
   workspace: &Workspace,
   prev_layout: &WorkspaceLayout,
@@ -581,6 +651,25 @@ pub fn on_layout_changed(
   }
 
   let is_reflow = behavior == LayoutSwitchBehavior::Reflow;
+
+  // Reflow rearranges the existing windows into the new layout, so any
+  // layout groups and the retained strip are dissolved first.
+  if is_reflow {
+    groups::dissolve_all(workspace)?;
+  }
+
+  // `keep` leaves the existing windows where they are: the strip stays a
+  // strip, and windows opened afterwards are placed in layout groups
+  // that are arranged by the new layout.
+  if !is_reflow && new_layout != &WorkspaceLayout::Scrolling {
+    let has_strip = workspace.has_retained_strip()
+      || prev_layout == &WorkspaceLayout::Scrolling;
+
+    if has_strip && workspace.tiling_children().next().is_some() {
+      workspace.set_retained_strip(true);
+      return Ok(());
+    }
+  }
 
   match new_layout {
     WorkspaceLayout::Tiling => {
@@ -626,7 +715,10 @@ pub fn on_workspace_config_reloaded(
   state: &WmState,
 ) -> anyhow::Result<()> {
   if prev_config.layout != new_config.layout {
-    if new_config.layout == WorkspaceLayout::Scrolling {
+    // The strip items of a retained strip keep their axis.
+    if new_config.layout == WorkspaceLayout::Scrolling
+      && !workspace.has_retained_strip()
+    {
       workspace.set_tiling_direction(new_config.scroll.axis);
     }
 
@@ -641,6 +733,7 @@ pub fn on_workspace_config_reloaded(
 
   if new_config.layout == WorkspaceLayout::Scrolling
     && prev_config.scroll.axis != new_config.scroll.axis
+    && !workspace.has_retained_strip()
   {
     workspace.set_tiling_direction(new_config.scroll.axis);
   }

@@ -34,6 +34,7 @@ struct WorkspaceInner {
   gaps_config: GapsConfig,
   tiling_direction: TilingDirection,
   scroll_offset: i32,
+  retained_strip: bool,
 }
 
 impl Workspace {
@@ -51,9 +52,26 @@ impl Workspace {
       gaps_config,
       tiling_direction,
       scroll_offset: 0,
+      retained_strip: false,
     };
 
     Self(Rc::new(RefCell::new(workspace)))
+  }
+
+  /// Whether the workspace keeps arranging its top-level children as a
+  /// scrolling strip although its layout was switched away from
+  /// scrolling with `layout_switch: keep`.
+  ///
+  /// The existing strip items stay where they are, and windows opened
+  /// afterwards are placed in layout groups (see
+  /// `crate::layouts::groups`).
+  pub fn has_retained_strip(&self) -> bool {
+    self.0.borrow().retained_strip
+  }
+
+  /// Sets whether the workspace retains its strip.
+  pub fn set_retained_strip(&self, retained_strip: bool) {
+    self.0.borrow_mut().retained_strip = retained_strip;
   }
 
   /// Underlying config for the workspace.

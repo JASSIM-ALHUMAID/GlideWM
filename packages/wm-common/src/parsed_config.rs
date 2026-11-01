@@ -1000,10 +1000,14 @@ pub enum LayoutSwitchBehavior {
   Reflow,
 
   /// Existing windows keep their arrangement; only windows that are
-  /// added afterwards are placed per the new layout. Sizes are still
-  /// adjusted where the new layout requires it (e.g. strip items that
-  /// add up to more than the viewport are scaled down to fit when
-  /// switching to `tiling`).
+  /// added afterwards are placed per the new layout.
+  ///
+  /// When switching away from `scrolling`, the existing strip stays
+  /// exactly as it is (sizes, positions and nested columns), and windows
+  /// opened afterwards share a new full-viewport strip item that is
+  /// arranged by the new layout. Scroll between them like between any
+  /// other strip items. When switching to `scrolling`, sizes are adjusted
+  /// to fit the strip.
   #[default]
   Keep,
 }

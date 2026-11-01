@@ -378,7 +378,7 @@ mod tests {
   }
 
   #[test]
-  fn rescales_sizes_when_config_switches_to_tiling() {
+  fn keeps_strip_when_config_switches_to_tiling() {
     let workspace =
       Workspace::mock().layout(WorkspaceLayout::Scrolling).call();
     let first = TilingWindow::mock().call();
@@ -422,9 +422,12 @@ mod tests {
 
     assert_eq!(workspace.config().layout, WorkspaceLayout::Tiling);
 
-    // The fractions are rescaled into shares that fill the viewport.
+    // `keep` is the default behavior: the existing windows keep their
+    // viewport fractions, and the workspace retains its strip.
+    assert!(workspace.has_retained_strip());
+
     for window in [&first, &second] {
-      assert!((window.tiling_size() - 0.5).abs() < f32::EPSILON);
+      assert!((window.tiling_size() - 0.7).abs() < f32::EPSILON);
     }
   }
 

@@ -8,6 +8,7 @@ use anyhow::Context;
 use uuid::Uuid;
 use wm_common::{
   ContainerDto, GapsConfig, SplitContainerDto, TilingDirection,
+  WorkspaceLayout,
 };
 use wm_platform::Rect;
 
@@ -35,6 +36,7 @@ struct SplitContainerInner {
   tiling_size: f32,
   tiling_direction: TilingDirection,
   gaps_config: GapsConfig,
+  layout_group: Option<WorkspaceLayout>,
 }
 
 impl SplitContainer {
@@ -50,9 +52,30 @@ impl SplitContainer {
       tiling_size: 1.0,
       tiling_direction,
       gaps_config,
+      layout_group: None,
     };
 
     Self(Rc::new(RefCell::new(split)))
+  }
+
+  /// The layout that arranges the contents of this split, when it is a
+  /// layout group (see `crate::layouts::groups`).
+  ///
+  /// Layout groups are direct children of a workspace that retained its
+  /// strip when its layout was switched with `layout_switch: keep`.
+  pub fn layout_group(&self) -> Option<WorkspaceLayout> {
+    self.0.borrow().layout_group.clone()
+  }
+
+  /// Marks the split as a layout group arranged by `layout`, or clears
+  /// the mark.
+  pub fn set_layout_group(&self, layout: Option<WorkspaceLayout>) {
+    self.0.borrow_mut().layout_group = layout;
+  }
+
+  /// Whether the split is a layout group.
+  pub fn is_layout_group(&self) -> bool {
+    self.0.borrow().layout_group.is_some()
   }
 
   pub fn to_dto(&self) -> anyhow::Result<ContainerDto> {

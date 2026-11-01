@@ -93,6 +93,21 @@ pub trait TilingSizeGetters: CommonGetters {
       }
     };
 
+    // A container that is a strip item (e.g. a layout group) can only be
+    // resized along the scroll axis.
+    if let Some(Container::Workspace(workspace)) =
+      container_to_resize.as_ref().and_then(CommonGetters::parent)
+    {
+      let strip_resize = layouts::direct_child_resize(
+        &DirectionContainer::Workspace(workspace),
+        is_width_resize,
+      );
+
+      if matches!(strip_resize, layouts::DirectChildResize::Skip) {
+        return Ok(None);
+      }
+    }
+
     Ok(container_to_resize)
   }
 }

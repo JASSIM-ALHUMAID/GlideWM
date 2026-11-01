@@ -66,6 +66,15 @@ fn toggle_window_direction(
         Ok(workspace.into())
       }
       DirectionContainer::Split(split_container) => {
+        // Layout groups stay as they are; only their direction flips.
+        if split_container.is_layout_group() {
+          split_container.set_tiling_direction(
+            split_container.tiling_direction().inverse(),
+          );
+
+          return Ok(split_container.into());
+        }
+
         flatten_split_container(split_container.clone())?;
 
         tiling_window

@@ -221,7 +221,9 @@ layout:
   # Can be overridden per workspace with `layout_switch`.
   # - 'reflow': Existing windows are rearranged into the new layout.
   # - 'keep': Existing windows keep their arrangement; only windows that
-  #   are added afterwards follow the new layout.
+  #   are added afterwards follow the new layout. When leaving 'scrolling',
+  #   the existing strip stays as it is and new windows share a new
+  #   full-viewport strip item arranged by the new layout.
   switch_behavior: 'keep'
 
   # Options for the tiling layout. The tiling layout has no options

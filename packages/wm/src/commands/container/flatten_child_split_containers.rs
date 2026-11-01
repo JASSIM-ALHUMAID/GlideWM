@@ -43,7 +43,10 @@ fn fold_split_children(parent: &DirectionContainer) -> anyhow::Result<()> {
   if tiling_children.len() == 1 {
     // Handle case where the parent is a split container and has a
     // single split container child.
-    if let Some(split_child) = tiling_children[0].as_split() {
+    if let Some(split_child) = tiling_children[0]
+      .as_split()
+      .filter(|s| !s.is_layout_group())
+    {
       flatten_split_container(split_child.clone())?;
       parent.set_tiling_direction(parent.tiling_direction().inverse());
     }
@@ -66,9 +69,10 @@ fn preserve_column_split_children(
   let tiling_children = tiling_children_of(parent);
 
   if tiling_children.len() == 1 {
-    // A column is only redundant if it contains a single window.
+    // A column is only redundant if it contains a single window. Layout
+    // groups are never redundant.
     if let Some(split_child) = tiling_children[0].as_split() {
-      if split_child.child_count() == 1 {
+      if split_child.child_count() == 1 && !split_child.is_layout_group() {
         flatten_split_container(split_child.clone())?;
       }
     }
@@ -90,7 +94,7 @@ fn collapse_single_child_splits(
   while let Some(redundant_split) = tiling_children_of(parent)
     .into_iter()
     .filter_map(|child| child.as_split().cloned())
-    .find(|split| split.child_count() == 1)
+    .find(|split| split.child_count() == 1 && !split.is_layout_group())
   {
     flatten_split_container(redundant_split)?;
   }
@@ -110,6 +114,7 @@ fn flatten_same_direction_split_children(
 
   for split_child in split_children.iter().filter(|split_child| {
     split_child.tiling_direction() == parent.tiling_direction()
+      && !split_child.is_layout_group()
   }) {
     // Additionally flatten redundant top-level split containers in the
     // child.
